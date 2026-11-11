@@ -1,0 +1,20 @@
+# Binaries
+/agentleash
+/agentleash.exe
+/dist/
+*.test
+*.out
+coverage.*
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local agent settings
+.claude/settings.local.json
+*.bak
+
+# Test fixture secrets are dummy values and ARE committed:
+!testdata/project/.env

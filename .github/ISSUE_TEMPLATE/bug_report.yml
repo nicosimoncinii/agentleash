@@ -1,0 +1,46 @@
+name: Bug report
+description: Something does not work as documented (for bypasses, use SECURITY.md instead)
+labels: ["type: bug", "status: triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Found a way to bypass the policy?** Please do not open a public issue:
+        report it privately via the Security tab (see SECURITY.md).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Include the exact command and the agentleash output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: agentleash version
+      placeholder: output of `agentleash version`
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent
+      options: [Claude Code, Codex, Not agent-specific]
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and shell
+      placeholder: e.g. Windows 11 + Git Bash, macOS 15 + zsh
+  - type: textarea
+    id: policy
+    attributes:
+      label: Your .agentleash.yaml
+      render: yaml
