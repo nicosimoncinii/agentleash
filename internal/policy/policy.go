@@ -73,3 +73,16 @@ func (p *Policy) Validate() error {
 	}
 	return nil
 }
+
+// Marshal renders a policy as YAML for `agentleash init`.
+// TODO(policy): emit a commented, human-friendly file.
+func Marshal(p *Policy) ([]byte, error) {
+	return yaml.Marshal(p)
+}
+
+// Find walks up from dir looking for FileName and returns the project root
+// (the directory containing it). ok is false when no policy file exists.
+// TODO(policy): implement and test.
+func Find(dir string) (root string, ok bool, err error) {
+	return "", false, errors.New("not implemented")
+}
