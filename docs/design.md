@@ -132,7 +132,7 @@ what must be blocked and common harmless names that must stay allowed.
             ┌──────────────── agentleash apply ────────────────┐
             │                                                  │
    .claude/settings.json                              .codex/hooks.json
-   - permissions.deny: Read(<secret globs>)           - PreToolUse hook
+   - permissions.deny: Read/Edit(<secret globs>)      - PreToolUse hook
    - PreToolUse hook (onFailure: block)               .codex/config.toml
                                                       - shell_environment_policy.exclude
             │                                                  │
@@ -175,12 +175,25 @@ dialect is unknown (Codex `exec_command`); `Request.Paths` is also honoured for 
 
 ### Agent specifics (verified against official docs, 2026-11)
 
-**Claude Code** — hooks in `.claude/settings.json` (`hooks.PreToolUse[]`, matcher, handler
-`type: command`, `onFailure: "block"`). Stdin: `tool_name`, `tool_input` (`command` for
-Bash/PowerShell, `file_path` for Read/Edit/Write, `path`/`pattern` for Grep/Glob), `cwd`.
+**Claude Code** — hooks in `.claude/settings.json` (`hooks.PreToolUse[]`, matcher, exec-form
+handler `{"type":"command","command":"<abs binary>","args":["hook","claude"],"onFailure":"block"}`;
+exec form needs no shell or quoting, and `onFailure` requires Claude Code v2.1.295+, below
+which a failing hook does not block). Stdin: `tool_name`, `tool_input` (`command` for
+Bash/PowerShell, `file_path` for Read/Edit/MultiEdit/Write, `notebook_path` for NotebookEdit,
+`path` + `glob` for Grep where `pattern` is the content regex, `path` + `pattern` for Glob;
+`path` defaults to `cwd`), `cwd`.
 Block: exit 0 + `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"..."}}`
-(`ask` supported). Native `permissions.deny` `Read(...)` rules use gitignore syntax and cover
-Read/Grep/Glob/Edit/Write but not Bash.
+(`ask` supported). Allow prints nothing: an explicit `"allow"` would skip the user's
+permission prompt. Native `permissions.deny` rules use gitignore syntax: `Read(...)` rules
+cover Read and (best effort) Grep/Glob plus file commands Claude Code recognises in Bash
+(`cat`, `head`, `tail`, `sed`, redirections) but not arbitrary subprocesses or `grep -r .`;
+writes (Write/Edit/MultiEdit/NotebookEdit, `tee`, `> file`) need `Edit(...)` rules, so
+agentleash emits both. `allow_files` become `Read(!x)`/`Edit(!x)` carve-outs, which only
+reach the bare rules listed before them in the same file; agentleash's block therefore goes
+first in `permissions.deny`, and a secret glob that overlaps an allow entry but cannot be
+carved (anchored or directory rules) gets no native rule and is enforced by the hook only.
+`.claude/settings.json` is read from the session's primary working directory: start
+`claude` at the project root.
 
 **Codex** — hooks in `.codex/hooks.json` or `[hooks]` in `.codex/config.toml`; project hooks
 load only when the project layer is trusted, and each hook must be trusted once via `/hooks`.
@@ -190,16 +203,28 @@ with an explanatory reason. `commandWindows` overrides the command on Windows.
 
 ### Merging config files
 
-`apply` never overwrites user configuration. It merges, and marks its own entries
-(e.g. the hook command contains `agentleash hook`) so re-running `apply` is idempotent and
-`apply --remove` can clean up. Before writing, a `.bak` copy is kept.
+`apply` never overwrites user configuration. It merges, preserving key order and unknown
+keys, and recognises its own entries so re-running `apply` is idempotent and
+`apply --remove` can clean up:
+
+- Hook handlers are recognised structurally with `agents.IsAgentleashCommand` (executable
+  base name `agentleash[.exe]` with args `hook <agent>`; legacy shell-form strings only when
+  the agentleash binary is the first word).
+- Native rules carry no marker, so the rules agentleash added are recorded in a sidecar
+  state file next to the config (Claude Code: `.claude/agentleash-state.json`, committed
+  with `settings.json`). Remove deletes only recorded rules; identical user rules survive.
+  A corrupt state file is an error with recovery steps; a missing one while the hook is
+  installed produces a warning (earlier rules are then kept as the user's).
+- A run that changes nothing in meaning writes nothing. Before the first modification of
+  an existing file the original is saved as `<file>.bak`; later runs never overwrite it,
+  so it always holds the pre-agentleash version.
 
 ## 7. Decision semantics
 
 Order: **deny > ask > allow**. Any internal error, unparsable command, or unknown construct
 that could hide a secret read results in `deny` with a reason (fail closed). Reasons are
 written for the agent to read, so they explain *what* was blocked and *how to proceed*
-(e.g. "use .env.example").
+(e.g. "use .env.example"; native rules carve `allow_files` out, so such advice stays valid).
 
 The engine is pure: no disk writes, no network. The only optional filesystem access is an
 injected symlink resolver (`engine.WithSymlinkResolver(filepath.EvalSymlinks)`); without it

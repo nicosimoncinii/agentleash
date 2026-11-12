@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "model": "claude-opus-5-5",
+  "permissions": {
+    "allow": [
+      "Bash(npm run test *)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "WebFetch(domain:evil.example)"
+    ],
+    "defaultMode": "default"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/check.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gofmt -w"
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "GREETING": "<hello> & \u00e9"
+  },
+  "zzzUnknownKey": {
+    "keep": [
+      1,
+      2.50,
+      true,
+      null
+    ]
+  }
+}

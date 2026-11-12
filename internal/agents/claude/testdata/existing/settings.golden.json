@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "model": "claude-opus-5-5",
+  "permissions": {
+    "allow": [
+      "Bash(npm run test *)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(/**/*.pem)",
+      "Read(/certs/*.key)",
+      "Read(/config/secrets.yml)",
+      "Read(~/.aws/credentials)",
+      "Read(//etc/ssl/private/**)",
+      "Read(//c/Users/dev/.ssh/id_rsa)",
+      "Read(!.env.example)",
+      "Edit(.env)",
+      "Edit(.env.*)",
+      "Edit(/**/*.pem)",
+      "Edit(/certs/*.key)",
+      "Edit(/config/secrets.yml)",
+      "Edit(~/.aws/credentials)",
+      "Edit(//etc/ssl/private/**)",
+      "Edit(//c/Users/dev/.ssh/id_rsa)",
+      "Edit(!.env.example)",
+      "Read(.env)",
+      "WebFetch(domain:evil.example)"
+    ],
+    "defaultMode": "default"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/check.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell|Read|Grep|Glob|Edit|MultiEdit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\Program Files\\agentleash\\agentleash.exe",
+            "args": [
+              "hook",
+              "claude"
+            ],
+            "timeout": 30,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gofmt -w"
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "GREETING": "<hello> & \u00e9"
+  },
+  "zzzUnknownKey": {
+    "keep": [
+      1,
+      2.50,
+      true,
+      null
+    ]
+  }
+}

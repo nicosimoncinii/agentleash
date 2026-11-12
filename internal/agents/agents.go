@@ -6,8 +6,10 @@ import (
 	"github.com/nicosimoncinii/agentleash/internal/policy"
 )
 
-// HookMarker is contained in every hook command agentleash installs. It lets Apply
-// recognise (and update or remove) its own entries without touching the user's.
+// HookMarker is the subcommand every installed hook runs ("agentleash hook <agent>").
+// It does not necessarily appear verbatim in the agent's config: exec-form handlers
+// split it into command and args, and Windows paths end in ".exe" and may be quoted.
+// Use IsAgentleashCommand to recognise agentleash's own hook entries.
 const HookMarker = "agentleash hook"
 
 // Adapter connects agentleash to one coding agent.
