@@ -1,0 +1,20 @@
+# Project-level Codex settings. Keep this file small.
+model = "gpt-5.5-codex"   # pinned for reproducible reviews
+approval_policy = "on-request"
+
+[sandbox_workspace_write]
+network_access = false # no egress from the sandbox
+
+# Environment handed to spawned commands.
+[shell_environment_policy]
+inherit = "core"
+set = { CI = "1" }
+
+[shell_environment_policy.filters]
+# cloud credentials never reach commands
+"AWS_*" = "exclude"
+"*_token" = "exclude" # same as *_TOKEN: keys merge case-insensitively
+
+[mcp_servers.docs]
+command = "npx"
+args = ["-y", "docs-mcp"]

@@ -1,0 +1,11 @@
+# Older config still using the legacy exclude array.
+[shell_environment_policy]
+inherit = "all"
+exclude = [
+# >>> agentleash hook: managed block (agentleash apply), do not edit >>>
+"*_KEY",
+"*_SECRET*",
+"*_TOKEN",
+"*PASSWORD*",
+# <<< agentleash hook sha256:04387416bf8e4538 <<<
+"AWS_*", "GITHUB_TOKEN"] # legacy form; Codex rejects mixing it with filters

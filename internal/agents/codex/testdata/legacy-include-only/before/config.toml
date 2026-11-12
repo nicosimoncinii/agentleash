@@ -1,0 +1,6 @@
+[shell_environment_policy]
+# Only pass what builds need.
+include_only = ["PATH", "HOME", "*_TOKEN"]
+
+[features]
+hooks = true

@@ -1,0 +1,35 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^apply_patch$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/lint-patch.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|exec_command|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/agentleash hook codex",
+            "statusMessage": "agentleash hook: checking tool call against .agentleash.yaml"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/audit.sh",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

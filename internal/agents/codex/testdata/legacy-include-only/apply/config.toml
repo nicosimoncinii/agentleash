@@ -1,0 +1,14 @@
+[shell_environment_policy]
+# >>> agentleash hook: managed block (agentleash apply), do not edit >>>
+exclude = [
+  "*_KEY",
+  "*_SECRET*",
+  "*_TOKEN",
+  "*PASSWORD*",
+]
+# <<< agentleash hook sha256:0f7a71df346376aa <<<
+# Only pass what builds need.
+include_only = ["PATH", "HOME", "*_TOKEN"]
+
+[features]
+hooks = true

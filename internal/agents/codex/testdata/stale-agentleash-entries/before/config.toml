@@ -1,0 +1,8 @@
+model = "gpt-5.5-codex"
+
+[shell_environment_policy.filters]
+# >>> agentleash hook: managed block (agentleash apply), do not edit >>>
+"*_KEY" = "exclude"
+"*PASSWORD*" = "exclude"
+# <<< agentleash hook sha256:8de3cf7ccc96d1ce <<<
+"AWS_*" = "exclude"

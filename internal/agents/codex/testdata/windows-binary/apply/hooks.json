@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|exec_command|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'C:\\Program Files\\agentleash\\agentleash.exe' hook codex",
+            "commandWindows": "\"C:\\Program Files\\agentleash\\agentleash.exe\" hook codex",
+            "statusMessage": "agentleash hook: checking tool call against .agentleash.yaml"
+          }
+        ]
+      }
+    ]
+  }
+}

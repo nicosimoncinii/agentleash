@@ -1,0 +1,5 @@
+# Older config still using the legacy exclude array.
+[shell_environment_policy]
+inherit = "all"
+exclude = [
+"AWS_*", "GITHUB_TOKEN"] # legacy form; Codex rejects mixing it with filters

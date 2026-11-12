@@ -1,0 +1,2 @@
+# No env globs in the policy: this file must stay untouched.
+model = "gpt-5.5-codex"

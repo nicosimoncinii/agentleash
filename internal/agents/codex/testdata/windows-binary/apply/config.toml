@@ -1,0 +1,7 @@
+# >>> agentleash hook: managed block (agentleash apply), do not edit >>>
+[shell_environment_policy.filters]
+"*_KEY" = "exclude"
+"*_SECRET*" = "exclude"
+"*_TOKEN" = "exclude"
+"*PASSWORD*" = "exclude"
+# <<< agentleash hook sha256:e312eb34083c1f50 <<<
