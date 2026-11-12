@@ -57,14 +57,14 @@ func TestDecodeHook(t *testing.T) {
 			want:    engine.Request{Tool: engine.ToolSearch, Paths: []string{"/home/dev/proj"}, Cwd: "/home/dev/proj"},
 		},
 		{
-			name:    "glob with path",
+			name:    "glob with path checks only the root (names only)",
 			payload: `{"cwd":"/home/dev/proj","tool_name":"Glob","tool_input":{"pattern":"**/.env*","path":"/home/dev/proj/svc"}}`,
-			want:    engine.Request{Tool: engine.ToolSearch, Paths: []string{"/home/dev/proj/svc", "**/.env*"}, Cwd: "/home/dev/proj"},
+			want:    engine.Request{Tool: engine.ToolSearch, Paths: []string{"/home/dev/proj/svc"}, Cwd: "/home/dev/proj"},
 		},
 		{
 			name:    "glob without path searches cwd",
 			payload: `{"cwd":"/home/dev/proj","tool_name":"Glob","tool_input":{"pattern":"*.pem"}}`,
-			want:    engine.Request{Tool: engine.ToolSearch, Paths: []string{"/home/dev/proj", "*.pem"}, Cwd: "/home/dev/proj"},
+			want:    engine.Request{Tool: engine.ToolSearch, Paths: []string{"/home/dev/proj"}, Cwd: "/home/dev/proj"},
 		},
 		{
 			name:    "edit",

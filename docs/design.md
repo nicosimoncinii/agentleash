@@ -181,7 +181,10 @@ exec form needs no shell or quoting, and `onFailure` requires Claude Code v2.1.2
 which a failing hook does not block). Stdin: `tool_name`, `tool_input` (`command` for
 Bash/PowerShell, `file_path` for Read/Edit/MultiEdit/Write, `notebook_path` for NotebookEdit,
 `path` + `glob` for Grep where `pattern` is the content regex, `path` + `pattern` for Glob;
-`path` defaults to `cwd`), `cwd`.
+`path` defaults to `cwd`), `cwd`. Glob returns file *names* only, never contents, so the
+adapter sends only its search root (`path`/`cwd`): Glob is denied only when the root is a
+secret or inside a secret directory (`~/.ssh`), and `**/*.json` or `.env*` are allowed. Grep
+reads contents, so its root and `glob` filter are both checked.
 Block: exit 0 + `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"..."}}`
 (`ask` supported). Allow prints nothing: an explicit `"allow"` would skip the user's
 permission prompt. Native `permissions.deny` rules use gitignore syntax: `Read(...)` rules

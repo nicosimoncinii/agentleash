@@ -519,7 +519,7 @@ func (s *secretSet) checkPath(arg string) (match, bool) {
 			if hasGlobMeta(c) {
 				continue
 			}
-			if r, err := s.resolve(unescapeGlob(c)); err == nil && r != "" {
+			if r, ok := resolveLongest(s.resolve, unescapeGlob(c)); ok {
 				canonical = true
 				if m, ok := s.checkAbs(normalizeAbs(r)); ok {
 					m.path = unescapeGlob(arg)
@@ -543,13 +543,51 @@ func (s *secretSet) checkPath(arg string) (match, bool) {
 // canonicalDir resolves a request directory through the injected resolver
 // (symlinks, Windows 8.3 short names), keeping the input when it fails.
 func canonicalDir(p string, resolve func(string) (string, error)) string {
-	if p == "" || resolve == nil {
-		return p
-	}
-	if r, err := resolve(p); err == nil && r != "" {
+	if r, ok := resolveLongest(resolve, p); ok {
 		return r
 	}
 	return p
+}
+
+// resolveLongest canonicalises the longest existing prefix of p and
+// re-appends the remainder, so a path that does not exist yet (or whose
+// leaf the resolver cannot see) lands in the same canonical space as its
+// parents: with /var -> /private/var, "/var/x/home/.ssh" becomes
+// "/private/var/x/home/.ssh" even when .ssh does not exist. A secret path
+// must never escape matching because of a symlinked parent.
+func resolveLongest(resolve func(string) (string, error), p string) (string, bool) {
+	if resolve == nil || p == "" {
+		return "", false
+	}
+	rest := ""
+	cur := p
+	for i := 0; i < 64; i++ {
+		if r, err := resolve(cur); err == nil && r != "" {
+			if rest == "" {
+				return r, true
+			}
+			sep := "/"
+			if strings.Contains(r, `\`) && !strings.Contains(r, "/") {
+				sep = `\`
+			}
+			return strings.TrimRight(r, `/\`) + sep + rest, true
+		}
+		j := strings.LastIndexAny(strings.TrimRight(cur, `/\`), `/\`)
+		if j <= 0 {
+			return "", false
+		}
+		leaf := strings.TrimRight(cur, `/\`)[j+1:]
+		if rest == "" {
+			rest = leaf
+		} else {
+			rest = leaf + "/" + rest
+		}
+		cur = cur[:j]
+		if strings.HasSuffix(cur, ":") { // C: -> C:\ (a drive root)
+			cur += `\`
+		}
+	}
+	return "", false
 }
 
 func (s *secretSet) checkAbs(c string) (match, bool) {

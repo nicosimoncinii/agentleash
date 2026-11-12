@@ -499,7 +499,16 @@ func TestClaudeHook(t *testing.T) {
 		},
 		{name: "Glob go files", tool: "Glob", input: fileInput("pattern", "**/*.go"), want: "allow"},
 		{name: "Glob src go files", tool: "Glob", input: fileInput("pattern", "src/*.go"), want: "allow"},
-		{name: "Glob .env*", tool: "Glob", input: fileInput("pattern", ".env*"), want: "deny"},
+		// Glob returns names only: its pattern is not checked, only its root.
+		{name: "Glob json files", tool: "Glob", input: fileInput("pattern", "**/*.json"), want: "allow"},
+		{name: "Glob .env* names", tool: "Glob", input: fileInput("pattern", ".env*"), want: "allow"},
+		{name: "Glob in ~/.ssh", tool: "Glob", want: "deny", input: func(string) map[string]any {
+			return map[string]any{"pattern": "*", "path": filepath.Join(homeDir, ".ssh")}
+		}},
+		// Grep reads contents: its glob filter is still checked.
+		{name: "Grep glob .env*", tool: "Grep", want: "deny", input: func(string) map[string]any {
+			return map[string]any{"pattern": "API_KEY", "glob": ".env*"}
+		}},
 		{name: "Write .env", tool: "Write", want: "deny", input: func(dir string) map[string]any {
 			return map[string]any{"file_path": filepath.Join(dir, ".env"), "content": "API_KEY=x\n"}
 		}},

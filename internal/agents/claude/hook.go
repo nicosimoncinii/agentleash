@@ -59,7 +59,15 @@ func (Adapter) DecodeHook(payload []byte, projectRoot, home string) (engine.Requ
 	case "Grep":
 		req.Paths, err = in.searchPaths(p.Cwd, "glob", false)
 	case "Glob":
+		// Glob returns file NAMES only, never contents: listing names leaks no
+		// secret, so only the search root is checked (denied when it is a
+		// secret or inside a secret directory). The pattern is still required
+		// for a well-formed payload. Grep, which reads contents, keeps its
+		// glob filter.
 		req.Paths, err = in.searchPaths(p.Cwd, "pattern", true)
+		if err == nil {
+			req.Paths = req.Paths[:1]
+		}
 	}
 	if err != nil {
 		return engine.Request{}, err
