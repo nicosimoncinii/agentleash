@@ -63,6 +63,9 @@ func TestPerformanceWorstCases(t *testing.T) {
 		el := time.Since(start)
 		t.Logf("%s: %v %s %s", c.name, el, v.Decision, v.Rule)
 		limit := 250 * time.Millisecond // generous for slow CI runners; typically well under 50 ms
+		if raceEnabled {
+			limit *= 10 // the race detector slows execution roughly 10x
+		}
 		if el > limit {
 			t.Errorf("%s: took %v (decision %s)", c.name, el, v.Decision)
 		}
