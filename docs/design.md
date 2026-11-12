@@ -53,7 +53,7 @@ agentleash version
 # .agentleash.yaml
 version: 1
 secrets:
-  files:            # gitignore-style globs; relative to project root unless ~/ or absolute
+  files:            # path globs; relative = anchored at project root, /abs, or ~/ (home)
     - ".env"
     - ".env.*"
     - "**/*.pem"
@@ -73,6 +73,58 @@ commands:
   ask:              # Claude Code: ask the user. Codex (no "ask" support): deny with reason.
     - "curl * | sh"
 ```
+
+The example above is abridged. `policy.Default()` (written by `agentleash init`) is a
+superset. It also covers:
+- nested `.env` files and `.envrc`;
+- more key and credential files (`*.key`, `*.p12`, `.npmrc`, `.netrc`, `*.tfstate*`,
+  `~/.ssh/**`, `~/.kube/config`, `~/.config/gcloud/**`, `~/.azure/**`, ...);
+- template and public-key `allow_files` (`.env.example`, `.env.sample`, `.env.template`,
+  `.env.dist`, `*.pub`);
+- the env names `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+  `GITHUB_TOKEN`, `DATABASE_URL` and `*_CONNECTION_STRING*` (not `AWS_*`, so `AWS_REGION` and
+  `AWS_PROFILE` stay visible);
+- more deny and ask command patterns.
+
+`internal/policy/policy.go` is the source of truth for the exact list. Its tests pin both
+what must be blocked and common harmless names that must stay allowed.
+
+**File globs** (`secrets.files`, `secrets.allow_files`):
+- Syntax: `path.Match` syntax (`*`, `?`, `[...]`) within one `/`-separated segment, plus
+  `**` as a whole segment for zero or more directories.
+- These are **not** gitignore patterns. A relative glob is anchored at the project root and
+  does not float to any depth: `.env` is only the root file, so use `**/.env` for any depth.
+- A leading `/` is an absolute filesystem path, and `~/` is the user's home directory.
+- `!` negation is rejected; list exceptions in `allow_files` instead.
+- Use forward slashes only.
+
+**Env globs** (`secrets.env`) use `path.Match` syntax over variable names.
+
+**Command patterns** (`commands.deny`, `commands.ask`):
+- `*` matches any run of characters, including `/` and spaces. `\*` matches a literal `*`,
+  as in `rm -rf /\*`. Every other character is literal.
+- Patterns are matched against the normalised simple command: whitespace is collapsed, and
+  wrappers such as `sudo`, `env`, `nohup` and `timeout` are stripped.
+- A pattern containing ` | ` is matched against a pipeline, stage by stage, with each stage
+  glob-matched. All other patterns are matched against each simple command.
+- `Validate` only checks that command patterns are non-empty and have no leading or trailing
+  whitespace.
+- Because `*` is this broad, keep patterns specific. For example, `rm -rf /*` would also
+  match `rm -rf /tmp/build`.
+
+**Loading rules.**
+- Decoding is strict: unknown fields are errors reported with line numbers.
+- An empty file, multiple YAML documents and null list items (`-`, `- ~`) are errors.
+- `Validate` reports all problems at once and names the field (`secrets.files[2]: ...`).
+  It rejects:
+  - an unsupported or missing `version`;
+  - empty or whitespace-padded entries;
+  - invalid file or env globs;
+  - backslashes, `~user` or a leading `!` in file globs;
+  - whitespace or `=` in env globs;
+  - duplicates within a list.
+- `Find` walks up from the working directory to the nearest `.agentleash.yaml`. The root it
+  returns is not symlink-resolved.
 
 ## 6. Architecture
 
