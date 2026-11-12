@@ -2,38 +2,17 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
-	"github.com/spf13/cobra"
+	"github.com/nicosimoncinii/agentleash/internal/cli"
 )
 
-// Set by GoReleaser via -ldflags.
+// Set by GoReleaser via -ldflags "-X main.version=... -X main.commit=...".
 var (
 	version = "dev"
 	commit  = "none"
 )
 
 func main() {
-	if err := newRootCmd().Execute(); err != nil {
-		os.Exit(1)
-	}
-}
-
-func newRootCmd() *cobra.Command {
-	root := &cobra.Command{
-		Use:           "agentleash",
-		Short:         "One policy file. Every coding agent. Secrets stay secret.",
-		SilenceUsage:  true,
-		SilenceErrors: false,
-	}
-	root.AddCommand(&cobra.Command{
-		Use:   "version",
-		Short: "Print version information",
-		Run: func(cmd *cobra.Command, _ []string) {
-			fmt.Fprintf(cmd.OutOrStdout(), "agentleash %s (%s)\n", version, commit)
-		},
-	})
-	// TODO(cli): init, apply, check, hook, doctor (issue: CLI).
-	return root
+	os.Exit(cli.Execute(cli.NewRootCmd(cli.Deps{Version: version, Commit: commit})))
 }
