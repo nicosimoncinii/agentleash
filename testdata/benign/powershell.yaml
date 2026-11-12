@@ -1,0 +1,44 @@
+description: Everyday PowerShell usage on Windows
+cases:
+  - name: Get-ChildItem
+    tool: shell
+    shell: powershell
+    command: Get-ChildItem
+    expect: allow
+  - name: Get-ChildItem recurse filter
+    tool: shell
+    shell: powershell
+    command: Get-ChildItem -Recurse -Filter *.go
+    expect: allow
+  - name: Get-Content README
+    tool: shell
+    shell: powershell
+    command: Get-Content README.md
+    expect: allow
+  - name: Get-Content env example
+    tool: shell
+    shell: powershell
+    command: Get-Content .env.example
+    expect: allow
+  - name: PATH split
+    tool: shell
+    shell: powershell
+    command: "$env:PATH -split ';'"
+    expect: allow
+    note: Non-secret environment variable.
+  - name: go test from PowerShell
+    tool: shell
+    shell: powershell
+    command: go test ./...
+    expect: allow
+  - name: Test-Path env file
+    tool: shell
+    shell: powershell
+    command: Test-Path .env
+    expect: allow
+    note: Existence check, no content read.
+  - name: Select-String in src
+    tool: shell
+    shell: powershell
+    command: Select-String -Path src\*.go -Pattern TODO
+    expect: allow

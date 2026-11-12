@@ -1,0 +1,52 @@
+description: Command substitution, process substitution, pipelines and lists
+cases:
+  - name: dollar-paren substitution
+    tool: shell
+    command: echo $(cat .env)
+    expect: deny
+    note: The read is nested inside an argument of a harmless command.
+  - name: quoted substitution
+    tool: shell
+    command: 'echo "$(cat .env)"'
+    expect: deny
+    note: Substitution inside double quotes.
+  - name: backticks
+    tool: shell
+    command: echo `cat .env`
+    expect: deny
+    note: Legacy command substitution syntax.
+  - name: process substitution
+    tool: shell
+    command: diff <(cat .env) x
+    expect: deny
+    note: Process substitution creates a /dev/fd path; the read is inside it.
+  - name: dollar-less-than shortcut
+    tool: shell
+    command: echo "$(< .env)"
+    expect: deny
+    note: Bash reads the file without running any external command at all.
+  - name: pipe into harmless command
+    tool: shell
+    command: cat .env | wc -c
+    expect: deny
+    note: Even "just counting" is blocked; engines should not reason about which sinks are safe.
+  - name: substitution in assignment
+    tool: shell
+    command: 'X=$(cat ~/.aws/credentials); echo "$X"'
+    expect: deny
+    note: Substitution on the right-hand side of an assignment-only statement.
+  - name: substitution in for list
+    tool: shell
+    command: 'for l in $(cat .env); do echo $l; done'
+    expect: deny
+    note: Substitution inside a for-loop word list.
+  - name: and-list after harmless command
+    tool: shell
+    command: git status && cat .env
+    expect: deny
+    note: The secret read is the second command of a list.
+  - name: cd inside subshell
+    tool: shell
+    command: 'ls; (cd .. && cat project/.env)'
+    expect: deny
+    note: The cwd changes inside the subshell. A cwd-tracking engine must follow it; a simpler one must still match the .env basename (**/.env).

@@ -1,0 +1,57 @@
+# Corpus baseline policy.
+#
+# This mirrors what `agentleash init` is expected to write (docs/design.md §5), but it is
+# pinned here on purpose: the corpus must not silently weaken if policy.Default() changes.
+# If Default() grows stricter, update this file too; never loosen it to make a case pass.
+version: 1
+secrets:
+  files:
+    - ".env"
+    - ".env.*"
+    - "**/.env"
+    - "**/.env.*"
+    - "**/*.pem"
+    - "**/*.key"
+    - "**/id_rsa*"
+    - "**/id_ed25519*"
+    - "**/id_ecdsa*"
+    - "~/.ssh/id_*"
+    - "~/.aws/credentials"
+    - "~/.config/gcloud/**"
+    - "~/.docker/config.json"
+    - "~/.netrc"
+    - "/proc/*/environ"
+  allow_files:
+    - ".env.example"
+    - "**/.env.example"
+    - ".env.*.example"
+    - ".env.sample"
+    - ".env.template"
+  env:
+    - "*_KEY"
+    - "*_KEY_*"
+    - "*_SECRET*"
+    - "*_TOKEN"
+    - "*_TOKEN_*"
+    - "*PASSWORD*"
+    - "*_CREDENTIALS*"
+commands:
+  deny:
+    - "rm -rf /"
+    - "rm -rf ~"
+    - "rm -rf ~/"
+    - "rm -rf $HOME"
+    - "git push --force*"
+    - "git push -f*"
+    - "git push * --force*"
+    - "git push * -f"
+    - "git push * -f *"
+    - ":(){ :|:& };:"
+    - "mkfs*"
+    - "dd * of=/dev/*"
+  ask:
+    - "curl * | sh"
+    - "curl * | bash"
+    - "wget * | sh"
+    - "wget * | bash"
+    - "git reset --hard*"

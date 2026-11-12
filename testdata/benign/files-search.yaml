@@ -1,0 +1,89 @@
+description: Listing, reading, searching and editing non-secret files
+cases:
+  - name: ls -la
+    tool: shell
+    command: ls -la
+    expect: allow
+    note: Listing names is not reading content, even though .env appears in the listing.
+  - name: cat README
+    tool: shell
+    command: cat README.md
+    expect: allow
+  - name: cat env example
+    tool: shell
+    command: cat .env.example
+    expect: allow
+    note: Explicitly allowed by allow_files; the template agents should use instead of .env.
+  - name: copy env example to another template
+    tool: shell
+    command: cp .env.example .env.local.example
+    expect: allow
+    note: The destination matches .env.* but also the .env.*.example allow entry.
+  - name: head of source
+    tool: shell
+    command: head -n 40 src/main.go
+    expect: allow
+  - name: grep TODO in src
+    tool: shell
+    command: grep -rn TODO src/
+    expect: allow
+  - name: grep for process.env usages
+    tool: shell
+    command: grep -rn "process.env" src/
+    expect: allow
+    note: The pattern contains ".env" but it is a pattern, and src/ holds no secrets.
+  - name: find go files
+    tool: shell
+    command: find . -name "*.go"
+    expect: allow
+  - name: sed in place
+    tool: shell
+    command: sed -i 's/a/b/' main.go
+    expect: allow
+  - name: wc on glob
+    tool: shell
+    command: wc -l src/*.go
+    expect: allow
+  - name: mkdir build
+    tool: shell
+    command: mkdir -p build
+    expect: allow
+  - name: rm node_modules
+    tool: shell
+    command: rm -rf node_modules
+    expect: allow
+    note: rm -rf on a project subdirectory is routine.
+  - name: rm dist
+    tool: shell
+    command: rm -rf ./dist
+    expect: allow
+    note: Must not prefix-match the "rm -rf /" deny pattern.
+  - name: move a source file
+    tool: shell
+    command: mv src/old.go src/new.go
+    expect: allow
+  - name: process substitution of sorted files
+    tool: shell
+    command: diff <(sort a.txt) <(sort b.txt)
+    expect: allow
+  - name: command substitution of git
+    tool: shell
+    command: echo "build $(git rev-parse --short HEAD)"
+    expect: allow
+  - name: loop over files
+    tool: shell
+    command: 'for f in src/*.go; do gofmt -l "$f"; done'
+    expect: allow
+  - name: read loop from non-secret file
+    tool: shell
+    command: 'while read -r f; do echo "$f"; done < files.txt'
+    expect: allow
+  - name: test that env file exists
+    tool: shell
+    command: test -f .env && echo present
+    expect: allow
+    note: test -f checks existence without reading the content.
+  - name: tar the dist folder
+    tool: shell
+    command: tar czf release.tgz dist/
+    expect: allow

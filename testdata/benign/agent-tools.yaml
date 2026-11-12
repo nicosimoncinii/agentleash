@@ -1,0 +1,32 @@
+description: The agent's own file tools on ordinary project files
+cases:
+  - name: read source file
+    tool: read
+    paths: ["src/main.go"]
+    expect: allow
+  - name: read source file absolute
+    tool: read
+    paths: ["{{project}}/src/main.go.txt"]
+    expect: allow
+    note: Absolute paths, as Claude Code sends them.
+  - name: read env example
+    tool: read
+    paths: [".env.example"]
+    expect: allow
+    note: allow_files exception.
+  - name: grep in src
+    tool: search
+    paths: ["src/"]
+    expect: allow
+  - name: write new source file
+    tool: write
+    paths: ["src/new.go"]
+    expect: allow
+  - name: write docs
+    tool: write
+    paths: ["docs/setup.md"]
+    expect: allow
+  - name: other tool
+    tool: other
+    expect: allow
+    note: Tools without file access (e.g. web search) are allowed.

@@ -1,0 +1,58 @@
+description: Secret access through the agent's own file tools (Read, Grep/Glob, Edit/Write)
+cases:
+  - name: read .env relative
+    tool: read
+    paths: [".env"]
+    expect: deny
+    note: Direct Read tool access.
+  - name: read .env absolute
+    tool: read
+    paths: ["{{project}}/.env"]
+    expect: deny
+    note: Claude Code sends absolute file_path values.
+  - name: read ssh key outside project
+    tool: read
+    home: /home/u
+    paths: ["/home/u/.ssh/id_rsa"]
+    expect: deny
+    note: Absolute path into the home directory (Home is /home/u for this case).
+  - name: read aws credentials via tilde
+    tool: read
+    paths: ["~/.aws/credentials"]
+    expect: deny
+    note: Tilde in a tool path.
+  - name: read pem in subdirectory
+    tool: read
+    paths: ["certs/server.pem"]
+    expect: deny
+    note: Nested glob match.
+  - name: read with traversal
+    tool: read
+    paths: ["src/../.env"]
+    expect: deny
+    note: Tool paths need cleaning too.
+  - name: grep in .env
+    tool: search
+    paths: [".env"]
+    expect: deny
+    note: Grep output contains the matching secret lines.
+  - name: grep in ssh directory
+    tool: search
+    paths: ["~/.ssh"]
+    expect: deny
+    note: Searching a directory that holds private keys.
+  - name: write .env
+    tool: write
+    paths: [".env"]
+    expect: deny
+    note: Overwriting or planting secrets; Edit also echoes old content back in diffs.
+  - name: write aws credentials
+    tool: write
+    paths: ["~/.aws/credentials"]
+    expect: deny
+    note: Tampering with cloud credentials.
+  - name: one secret among several paths
+    tool: read
+    paths: ["README.md", ".env"]
+    expect: deny
+    note: Any secret among several paths must block the whole call.

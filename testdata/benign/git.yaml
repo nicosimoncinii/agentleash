@@ -1,0 +1,54 @@
+description: Everyday git usage seen in agent sessions
+cases:
+  - name: status
+    tool: shell
+    command: git status
+    expect: allow
+  - name: diff
+    tool: shell
+    command: git diff
+    expect: allow
+  - name: diff path-limited
+    tool: shell
+    command: git diff HEAD~1 -- src/
+    expect: allow
+  - name: log oneline
+    tool: shell
+    command: git log --oneline -5
+    expect: allow
+  - name: push feature branch
+    tool: shell
+    command: git push origin feat/x
+    expect: allow
+    note: Only forced pushes are denied.
+  - name: push with upstream
+    tool: shell
+    command: git push -u origin feat/x
+    expect: allow
+    note: -u must not be confused with -f.
+  - name: new branch
+    tool: shell
+    command: git checkout -b feat/corpus
+    expect: allow
+  - name: add and commit
+    tool: shell
+    command: 'git add src/main.go && git commit -m "fix: handle empty input"'
+    expect: allow
+  - name: commit message mentioning env file
+    tool: shell
+    command: 'git commit -m "docs: explain .env setup"'
+    expect: allow
+    note: The -m value is a message, not a path. Engines that treat every word as a path false-positive here.
+  - name: rebase on main
+    tool: shell
+    command: git fetch origin && git rebase origin/main
+    expect: allow
+  - name: show a commit
+    tool: shell
+    command: git show --stat HEAD
+    expect: allow
+  - name: soft reset
+    tool: shell
+    command: git reset --soft HEAD~1
+    expect: allow
+    note: Only --hard is in the ask list.

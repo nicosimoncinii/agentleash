@@ -1,0 +1,57 @@
+description: Naming secret files through glob and brace patterns the shell expands at runtime
+cases:
+  - name: star suffix
+    tool: shell
+    command: cat .en*
+    expect: deny
+    note: Expands to .env and .env.example; globs must be matched against secrets, not just literal names.
+  - name: question mark
+    tool: shell
+    command: cat .e?v
+    expect: deny
+    note: Single-character wildcard.
+  - name: bracket around dot
+    tool: shell
+    command: cat [.]env
+    expect: deny
+    note: Bracket expression around the leading dot. Whether bash expands it depends on dotglob; fail closed.
+  - name: bracket on letter
+    tool: shell
+    command: cat .[e]nv
+    expect: deny
+    note: A bracket class that clearly expands to .env.
+  - name: pem in project root
+    tool: shell
+    command: cat ./*.pem
+    expect: deny
+    note: Expands to ./dev.pem.
+  - name: globstar id_rsa
+    tool: shell
+    command: cat **/id_rsa
+    expect: deny
+    note: Finds deploy/id_rsa (without globstar, ** behaves like * and still matches it).
+  - name: star directory
+    tool: shell
+    command: cat */*.pem
+    expect: deny
+    note: Matches certs/server.pem.
+  - name: brace expansion
+    tool: shell
+    command: cat .{e,x}nv
+    expect: deny
+    note: Brace expansion is not a glob; bash expands it to .env .xnv before globbing.
+  - name: home glob
+    tool: shell
+    command: cat ~/.ssh/id_*
+    expect: deny
+    note: Glob under the home directory.
+  - name: globs in two components
+    tool: shell
+    command: cat ~/.a*/cred*
+    expect: deny
+    note: Matches ~/.aws/credentials.
+  - name: all dotfiles
+    tool: shell
+    command: cat .*
+    expect: deny
+    note: Every dotfile in the project root, including .env.

@@ -1,0 +1,87 @@
+description: Building, testing and running code
+cases:
+  - name: go test all
+    tool: shell
+    command: go test ./...
+    expect: allow
+  - name: go test race verbose
+    tool: shell
+    command: go test -race -run TestCorpus -v ./internal/engine/
+    expect: allow
+  - name: go vet and gofmt
+    tool: shell
+    command: go vet ./... && gofmt -l .
+    expect: allow
+  - name: cross compile with env assignment
+    tool: shell
+    command: GOOS=linux GOARCH=amd64 go build -o dist/app ./cmd/agentleash
+    expect: allow
+    note: Prefix assignments of non-secret variables are fine.
+  - name: env wrapper with non-secret assignment
+    tool: shell
+    command: env CGO_ENABLED=0 go build ./...
+    expect: allow
+    note: env with a command operand runs that command; it does not dump the environment.
+  - name: npm install
+    tool: shell
+    command: npm install
+    expect: allow
+  - name: npm run build
+    tool: shell
+    command: npm run build
+    expect: allow
+  - name: node env build
+    tool: shell
+    command: NODE_ENV=production npm run build
+    expect: allow
+  - name: npx tsc
+    tool: shell
+    command: npx tsc --noEmit
+    expect: allow
+  - name: pytest quiet
+    tool: shell
+    command: pytest -q
+    expect: allow
+  - name: python module pytest
+    tool: shell
+    command: python -m pytest tests/ -x
+    expect: allow
+  - name: python script
+    tool: shell
+    command: python script.py
+    expect: allow
+  - name: harmless python one-liner
+    tool: shell
+    command: python3 -c "import sys; print(sys.version)"
+    expect: allow
+    note: Inline interpreter code that opens no files and reads no secret variables.
+  - name: node script
+    tool: shell
+    command: node index.js
+    expect: allow
+  - name: make test
+    tool: shell
+    command: make test
+    expect: allow
+  - name: cargo test
+    tool: shell
+    command: cargo test --all-features
+    expect: allow
+  - name: docker compose up
+    tool: shell
+    command: docker compose up -d
+    expect: allow
+  - name: strict mode script
+    tool: shell
+    command: set -euo pipefail; go test ./...
+    expect: allow
+    note: set with options changes shell behaviour; only bare set dumps variables.
+  - name: nested bash -c
+    tool: shell
+    command: bash -c "go test ./... && go vet ./..."
+    expect: allow
+    note: Recursion into sh -c must not itself be treated as suspicious.
+  - name: run a project script
+    tool: shell
+    command: chmod +x scripts/build.sh && ./scripts/build.sh
+    expect: allow

@@ -1,0 +1,62 @@
+description: Reading secrets from inline interpreter programs
+cases:
+  - name: python -c open
+    tool: shell
+    command: python -c "print(open('.env').read())"
+    expect: deny
+    note: The path is a string literal inside Python code.
+  - name: python3 pathlib
+    tool: shell
+    command: python3 -c 'import pathlib; print(pathlib.Path(".env").read_text())'
+    expect: deny
+    note: Alternative Python API.
+  - name: python expanduser ssh key
+    tool: shell
+    command: python3 -c "import os; print(open(os.path.expanduser('~/.ssh/id_rsa')).read())"
+    expect: deny
+    note: Tilde expansion happens inside Python, not in the shell.
+  - name: python script from heredoc
+    tool: shell
+    command: "python3 - <<'PY'\nprint(open('.env').read())\nPY"
+    expect: deny
+    note: Script supplied on stdin through a here-document.
+  - name: node -e readFileSync
+    tool: shell
+    command: node -e "require('fs').readFileSync('.env')"
+    expect: deny
+    note: Node inline evaluation.
+  - name: node -p
+    tool: shell
+    command: node -p "require('fs').readFileSync('.env','utf8')"
+    expect: deny
+    note: -p prints the value of the expression.
+  - name: perl -ne print
+    tool: shell
+    command: perl -ne print .env
+    expect: deny
+    note: The file is a plain operand; perl reads it line by line.
+  - name: ruby -e File.read
+    tool: shell
+    command: ruby -e 'puts File.read(".env")'
+    expect: deny
+    note: Ruby inline evaluation.
+  - name: php -r
+    tool: shell
+    command: php -r 'echo file_get_contents(".env");'
+    expect: deny
+    note: PHP inline evaluation.
+  - name: python reads secret env var
+    tool: shell
+    command: python -c "import os; print(os.environ['GITHUB_TOKEN'])"
+    expect: deny
+    note: Environment exposure through an interpreter.
+  - name: node dumps process.env
+    tool: shell
+    command: node -e "console.log(process.env)"
+    expect: deny
+    note: Dumps every environment variable, secrets included.
+  - name: python string concatenation
+    tool: shell
+    command: python -c "print(open('.e'+'nv').read())"
+    expect: deny
+    note: The path never appears literally. A regex on ".env" fails; inline code that opens files must fail closed.

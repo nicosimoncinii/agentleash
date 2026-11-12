@@ -1,0 +1,34 @@
+description: Non-secret environment variables and ordinary network use
+cases:
+  - name: echo PATH
+    tool: shell
+    command: echo $PATH
+    expect: allow
+  - name: echo HOME
+    tool: shell
+    command: echo $HOME
+    expect: allow
+  - name: printenv non-secret
+    tool: shell
+    command: printenv GOPATH
+    expect: allow
+    note: printenv with a non-secret name prints only that variable.
+  - name: export PATH
+    tool: shell
+    command: export PATH="$PATH:$HOME/go/bin"
+    expect: allow
+    note: export with an assignment does not list variables.
+  - name: curl GitHub API
+    tool: shell
+    command: curl -s https://api.github.com
+    expect: allow
+  - name: curl download to file
+    tool: shell
+    command: curl -sSfL -o /tmp/tool.tgz https://example.com/tool.tgz
+    expect: allow
+    note: Downloading to a file is not piping into a shell.
+  - name: sudo package install
+    tool: shell
+    command: sudo apt-get install -y jq
+    expect: allow
+    note: sudo itself is not denied by the policy.

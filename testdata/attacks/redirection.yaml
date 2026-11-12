@@ -1,0 +1,57 @@
+description: Reading secrets through redirections and file descriptor tricks (no file operand)
+cases:
+  - name: stdin redirect to cat
+    tool: shell
+    command: cat < .env
+    expect: deny
+    note: The path is a redirection target, not an argument; argv-only analysis misses it.
+  - name: stdin redirect to non-reader
+    tool: shell
+    command: tr a a < .env
+    expect: deny
+    note: tr is not a "file reader" but its stdin is the secret; any input redirect from a secret must be blocked.
+  - name: exec opens fd 3
+    tool: shell
+    command: exec 3<.env; cat <&3
+    expect: deny
+    note: The secret is opened by exec on fd 3 and read later through fd duplication.
+  - name: while read loop
+    tool: shell
+    command: 'while read l; do echo $l; done < .env'
+    expect: deny
+    note: Redirect attached to a compound command (while loop), not to a simple command.
+  - name: read builtin into variable
+    tool: shell
+    command: 'read -r line < .env; echo "$line"'
+    expect: deny
+    note: The read builtin only touches the redirection; output comes from echo.
+  - name: mapfile builtin
+    tool: shell
+    command: 'mapfile -t lines < .env; printf "%s\n" "${lines[@]}"'
+    expect: deny
+    note: Bash builtin that slurps a whole file into an array.
+  - name: redirect before command name
+    tool: shell
+    command: < .env cat
+    expect: deny
+    note: Redirections may appear before the command word.
+  - name: read-write redirect
+    tool: shell
+    command: cat 0<>.env
+    expect: deny
+    note: The <> operator opens for reading and writing; still a read.
+  - name: here-string of file substitution
+    tool: shell
+    command: 'cat <<< "$(< .env)"'
+    expect: deny
+    note: Bash $(< file) is a cat-less read inside a here-string.
+  - name: brace group redirect
+    tool: shell
+    command: '{ cat; } < .env'
+    expect: deny
+    note: A redirect on a brace group applies to every command inside it.
+  - name: subshell redirect with tilde
+    tool: shell
+    command: (cat) < ~/.aws/credentials
+    expect: deny
+    note: Redirect on a subshell, with tilde expansion in the redirect target.
