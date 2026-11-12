@@ -34,7 +34,9 @@ Teams using more than one agent maintain several configs that drift apart.
   `cat .en*`, `base64 .env`, `printenv`, `echo $AWS_SECRET_ACCESS_KEY`...
 - **Fails closed**: when in doubt, it blocks and tells the agent why.
 - **Proven by a public attack corpus**: every bypass attempt in [`testdata/attacks`](testdata/attacks)
-  must be blocked, every command in [`testdata/benign`](testdata/benign) must pass.
+  (190+ cases, written by an independent red team) must be blocked, every command in
+  [`testdata/benign`](testdata/benign) (70+ real agent commands) must pass. CI runs it on
+  Linux, macOS and Windows on every push, plus end-to-end tests against the built binary.
 
 ```yaml
 # .agentleash.yaml
@@ -53,7 +55,7 @@ commands:
 | Agent | Native rules | Runtime hook | Status |
 |---|---|---|---|
 | Claude Code | `permissions.deny` | `PreToolUse` | 🚧 v0.1 |
-| Codex CLI | `shell_environment_policy` | `PreToolUse` | 🚧 v0.1 |
+| Codex CLI | `shell_environment_policy` (env filtering) | `PreToolUse` | 🚧 v0.1 |
 | Gemini CLI | | | 🗺️ planned |
 | Cursor | | | 🗺️ planned |
 
@@ -76,13 +78,36 @@ agentleash doctor           # verify everything is wired up
 
 > Codex asks you to trust new hooks once: open Codex and run `/hooks`.
 
+## Requirements
+
+- **Claude Code v2.1.295 or later.** Older versions ignore the hook's `onFailure: "block"`,
+  so a crashed or timed-out hook would let the tool call through. Start `claude` from the
+  project root: project settings are only read from there.
+- **Codex:** the project must be trusted, and the agentleash hook must be trusted once via
+  `/hooks`. Until then Codex does not run it.
+
 ## Honest limits
 
 Both Anthropic and OpenAI describe hooks as *a guardrail, not a complete enforcement
 boundary*. agentleash raises the bar a lot, but it is **not a sandbox**: a determined
 process can still find ways around it. Combine it with OS-level sandboxing for untrusted
-work, and keep real secrets out of your repository. Found a bypass?
-Please report it privately, see [SECURITY.md](SECURITY.md).
+work, and keep real secrets out of your repository.
+
+Known gaps in v0.1 (details in [docs/design.md](docs/design.md) §7.7):
+
+- **Write-then-execute**: a script, Makefile or `npm run` target is checked by path, not by
+  its contents.
+- **Whole-tree reads** such as `grep -r foo .` or `docker build .` can still reach `.env`
+  (use `.dockerignore`).
+- **Interpreter one-liners** (`python -c`, `node -e`) are scanned heuristically; heavily
+  obfuscated code can get through.
+- **PowerShell** is tokenized, not fully parsed.
+- **Codex**: commands typed into an interactive shell via `write_stdin` do not trigger
+  hooks ([#18](https://github.com/nicosimoncinii/agentleash/issues/18)).
+- An agent could edit `.agentleash.yaml` itself to weaken it
+  ([#17](https://github.com/nicosimoncinii/agentleash/issues/17)).
+
+Found a bypass? Please report it privately, see [SECURITY.md](SECURITY.md).
 
 ## Roadmap
 
