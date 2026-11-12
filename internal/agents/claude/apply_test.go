@@ -222,7 +222,7 @@ func TestApplyGolden(t *testing.T) {
 func TestApplyBlockPrecedesUserRules(t *testing.T) {
 	root := project(t, "user-env-rule/settings.input.json")
 	mustApply(t, root, goldenPolicy())
-	block, _, err := denyBlock(goldenPolicy())
+	block, _, err := denyBlock(goldenPolicy(), root, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +329,7 @@ func TestApplyPolicyChangeDropsStaleRulesOnly(t *testing.T) {
 	}
 	deny := denyList(t, readFile(t, settingsPath(root)))
 	want := []string{
-		"Read(.env)", "Read(/**/*.pem)", "Edit(.env)", "Edit(/**/*.pem)",
+		"Read(.env)", "Read(*.pem)", "Edit(.env)", "Edit(*.pem)",
 		"Read(.env)", "WebFetch(domain:evil.example)",
 	}
 	if !slices.Equal(deny, want) {
@@ -484,7 +484,7 @@ func TestPostApplyNotes(t *testing.T) {
 	p.Secrets.Files = []string{"config/*.env"}
 	p.Secrets.AllowFiles = []string{"config/sample.env"}
 	mustApply(t, t.TempDir(), p)
-	if notes := (Adapter{}).PostApplyNotes(); !strings.Contains(notes[0], `"config/*.env" overlaps allow_files "config/sample.env"`) {
+	if notes := (Adapter{}).PostApplyNotes(); !strings.Contains(notes[0], `allow_files "config/sample.env" stays blocked`) {
 		t.Fatalf("overlap warning missing: %q", notes)
 	}
 }
@@ -529,5 +529,42 @@ func TestResolveBinary(t *testing.T) {
 		if err != nil || got != tt.want {
 			t.Errorf("resolveBinary(%q) = %q, %v; want %q", tt.in, got, err, tt.want)
 		}
+	}
+}
+
+// The real default policy must get native rules for every dotenv glob, with carve-outs
+// for the template files, and warn only about overlaps that truly cannot be carved
+// (keeping those native rules: fail closed).
+func TestApplyDefaultPolicyGolden(t *testing.T) {
+	userHomeDir = func() (string, error) { return "/home/dev", nil }
+	t.Cleanup(func() { userHomeDir = os.UserHomeDir })
+
+	root := t.TempDir()
+	mustApply(t, root, policy.Default())
+	settings := readFile(t, settingsPath(root))
+	golden(t, "default-policy/settings.golden.json", settings)
+
+	deny := denyList(t, settings)
+	for _, want := range []string{
+		"Read(.env)", "Read(.env.*)", "Read(.envrc)", "Read(!.env.example)", "Read(!.env.sample)",
+		"Read(!.env.template)", "Read(!.env.dist)", "Read(!*.pub)", "Read(id_rsa*)",
+		"Edit(.env.*)", "Edit(!.env.example)", "Read(~/.ssh/**)", "Edit(~/.ssh/**)",
+	} {
+		if !slices.Contains(deny, want) {
+			t.Errorf("default policy: permissions.deny lacks %q", want)
+		}
+	}
+
+	var warnings []string
+	for _, n := range (Adapter{}).PostApplyNotes() {
+		if !slices.Contains(staticNotes, n) {
+			warnings = append(warnings, n)
+		}
+	}
+	// ~/.ssh/** really overlaps ~/.ssh/*.pub; a home-anchored rule cannot be carved, so
+	// the native rule is kept and the note says *.pub stays blocked natively.
+	want := `allow_files "~/.ssh/*.pub" stays blocked by Claude Code's native rules Read(~/.ssh/**)/Edit(~/.ssh/**)`
+	if len(warnings) != 1 || !strings.Contains(warnings[0], want) {
+		t.Fatalf("default policy warnings = %q, want exactly one about %s", warnings, want)
 	}
 }

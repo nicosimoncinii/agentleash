@@ -65,6 +65,9 @@ var staticNotes = []string{
 	"Commit .claude/" + stateFileName + " together with .claude/settings.json: it records which permission rules agentleash manages, so later apply/remove runs do not touch yours.",
 }
 
+// userHomeDir is replaced in tests.
+var userHomeDir = os.UserHomeDir
+
 // lastNotes holds the warnings of the most recent Apply in this process. The CLI
 // calls PostApplyNotes on the same (stateless) Adapter value right after Apply.
 var lastNotes struct {
@@ -99,7 +102,12 @@ func (Adapter) Apply(projectRoot string, p *policy.Policy, binary string) ([]str
 	if err != nil {
 		return nil, err
 	}
-	block, notes, err := denyBlock(p)
+	root, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return nil, fmt.Errorf("claude: apply: %w", err)
+	}
+	home, _ := userHomeDir() // unknown home: "~/" globs overlap no project glob
+	block, notes, err := denyBlock(p, root, home)
 	if err != nil {
 		return nil, fmt.Errorf("claude: apply: %w", err)
 	}

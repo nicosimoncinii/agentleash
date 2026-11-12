@@ -1,0 +1,101 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(*.pem)",
+      "Read(*.key)",
+      "Read(id_rsa*)",
+      "Read(id_ed25519*)",
+      "Read(*.p12)",
+      "Read(*.pfx)",
+      "Read(id_ecdsa*)",
+      "Read(*.ppk)",
+      "Read(.envrc)",
+      "Read(.npmrc)",
+      "Read(.pypirc)",
+      "Read(.netrc)",
+      "Read(.git-credentials)",
+      "Read(credentials.json)",
+      "Read(*.tfstate)",
+      "Read(*.tfstate.*)",
+      "Read(secrets.y*ml)",
+      "Read(~/.aws/credentials)",
+      "Read(~/.ssh/**)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.docker/config.json)",
+      "Read(~/.kube/config)",
+      "Read(~/.config/gh/hosts.yml)",
+      "Read(~/.config/gcloud/**)",
+      "Read(~/.azure/**)",
+      "Read(~/.npmrc)",
+      "Read(~/.pypirc)",
+      "Read(~/.netrc)",
+      "Read(~/.git-credentials)",
+      "Read(~/.pgpass)",
+      "Read(~/.terraform.d/credentials.tfrc.json)",
+      "Read(!.env.example)",
+      "Read(!.env.sample)",
+      "Read(!.env.template)",
+      "Read(!.env.dist)",
+      "Read(!*.pub)",
+      "Edit(.env)",
+      "Edit(.env.*)",
+      "Edit(*.pem)",
+      "Edit(*.key)",
+      "Edit(id_rsa*)",
+      "Edit(id_ed25519*)",
+      "Edit(*.p12)",
+      "Edit(*.pfx)",
+      "Edit(id_ecdsa*)",
+      "Edit(*.ppk)",
+      "Edit(.envrc)",
+      "Edit(.npmrc)",
+      "Edit(.pypirc)",
+      "Edit(.netrc)",
+      "Edit(.git-credentials)",
+      "Edit(credentials.json)",
+      "Edit(*.tfstate)",
+      "Edit(*.tfstate.*)",
+      "Edit(secrets.y*ml)",
+      "Edit(~/.aws/credentials)",
+      "Edit(~/.ssh/**)",
+      "Edit(~/.gnupg/**)",
+      "Edit(~/.docker/config.json)",
+      "Edit(~/.kube/config)",
+      "Edit(~/.config/gh/hosts.yml)",
+      "Edit(~/.config/gcloud/**)",
+      "Edit(~/.azure/**)",
+      "Edit(~/.npmrc)",
+      "Edit(~/.pypirc)",
+      "Edit(~/.netrc)",
+      "Edit(~/.git-credentials)",
+      "Edit(~/.pgpass)",
+      "Edit(~/.terraform.d/credentials.tfrc.json)",
+      "Edit(!.env.example)",
+      "Edit(!.env.sample)",
+      "Edit(!.env.template)",
+      "Edit(!.env.dist)",
+      "Edit(!*.pub)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell|Read|Grep|Glob|Edit|MultiEdit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\Program Files\\agentleash\\agentleash.exe",
+            "args": [
+              "hook",
+              "claude"
+            ],
+            "timeout": 30,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}

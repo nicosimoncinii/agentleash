@@ -8,7 +8,7 @@
     "deny": [
       "Read(.env)",
       "Read(.env.*)",
-      "Read(/**/*.pem)",
+      "Read(*.pem)",
       "Read(/certs/*.key)",
       "Read(/config/secrets.yml)",
       "Read(~/.aws/credentials)",
@@ -17,7 +17,7 @@
       "Read(!.env.example)",
       "Edit(.env)",
       "Edit(.env.*)",
-      "Edit(/**/*.pem)",
+      "Edit(*.pem)",
       "Edit(/certs/*.key)",
       "Edit(/config/secrets.yml)",
       "Edit(~/.aws/credentials)",

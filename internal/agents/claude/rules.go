@@ -2,8 +2,8 @@ package claude
 
 import (
 	"fmt"
-	"path"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/nicosimoncinii/agentleash/internal/policy"
@@ -70,9 +70,22 @@ func parseGlob(raw string) (glob, error) {
 		for strings.HasPrefix(s, "./") {
 			s = s[2:]
 		}
-		g.anchor = anchorBare
-		if strings.Contains(strings.TrimSuffix(s, "/"), "/") {
+		// gitignore: a pattern without an inner slash, or one starting with "**/",
+		// matches at any depth. Keep those relative (unanchored), the only form a "!"
+		// carve-out can reach, and drop a redundant "**/" before a single name: the
+		// docs state that Read(.env) and Read(**/.env) are equivalent.
+		anyDepth := false
+		for strings.HasPrefix(s, "**/") {
+			s, anyDepth = s[3:], true
+		}
+		inner := strings.Contains(strings.TrimSuffix(s, "/"), "/")
+		switch {
+		case inner && anyDepth:
+			g.anchor, s = anchorBare, "**/"+s
+		case inner:
 			g.anchor = anchorRoot
+		default:
+			g.anchor = anchorBare
 		}
 	}
 	if strings.HasSuffix(s, "/") {
@@ -102,61 +115,163 @@ func (g glob) rulePath() string {
 
 func (g glob) relative() bool { return g.anchor == anchorBare || g.anchor == anchorRoot }
 
-// overlap reports whether some path matched by allow may also be matched by secret.
-// dirOnly is true when the bare secret only matches a parent directory of allow
-// (a "!" rule cannot reopen a path inside an excluded directory). The comparison is
-// conservative: when unsure it reports an overlap.
-func overlap(secret, allow glob) (overlaps, dirOnly bool) {
-	if allow.anchor == anchorUNC {
+// overlap reports whether some concrete path is matched by both secret and allow,
+// and whether a "!" carve-out can reopen it natively.
+//
+// Both globs are mapped to absolute segment lists using the project root and home
+// directory, so a project glob and a "~/" glob only overlap when the project really
+// contains (or is) that home location. Carving needs an unanchored relative secret
+// rule, a relative allow entry, and a secret that is not a whole-directory rule
+// ("x/**"): the docs say a carve-out reaches only "path"/"./path" rules and cannot
+// reopen a file inside a blocked directory.
+func overlap(secret, allow glob, root, home string) (overlaps, carvable bool) {
+	if secret.anchor == anchorUNC || allow.anchor == anchorUNC {
 		return false, false
 	}
-	allowSegs := strings.Split(allow.body, "/")
-	if secret.anchor == anchorBare {
-		if !allow.relative() {
-			return true, false // cannot tell whether it lies under the project
-		}
-		pat := strings.Split(secret.body, "/") // "name" or "name/**"
-		fileMatch, dirMatch := false, false
-		for i, seg := range allowSegs {
-			switch {
-			case !segMatch(pat[0], seg):
-			case i < len(allowSegs)-1:
-				dirMatch = true
-			case len(pat) == 1:
-				fileMatch = true
-			}
-		}
-		return fileMatch || dirMatch, dirMatch
+	if !pathsIntersect(secret.segments(root, home), allow.segments(root, home)) {
+		return false, false
 	}
-	secretSegs := strings.Split(secret.body, "/")
-	switch {
-	case secret.anchor == anchorRoot && allow.anchor == anchorBare:
-		// A bare allow name matches at any depth: compare file names.
-		last := secretSegs[len(secretSegs)-1]
-		return last == "**" || segMatch(last, allowSegs[len(allowSegs)-1]), false
-	case secret.anchor == allow.anchor:
-		return matchSegs(secretSegs, allowSegs), false
+	return true, secret.anchor == anchorBare && allow.relative() && !strings.HasSuffix(secret.body, "**")
+}
+
+// segments maps the glob to lower-cased absolute path segments ("**" spans any
+// number of segments). Comparison is case-insensitive, like the engine's.
+func (g glob) segments(root, home string) []string {
+	body := strings.Split(strings.ToLower(g.body), "/")
+	switch g.anchor {
+	case anchorBare:
+		return append(append(dirSegments(root, "<unknown project root>"), "**"), body...)
+	case anchorRoot:
+		return append(dirSegments(root, "<unknown project root>"), body...)
+	case anchorHome:
+		return append(dirSegments(home, "<unknown home>"), body...)
 	default:
-		// Home or absolute secrets vs project-relative allows (and vice versa):
-		// assumes the project does not live inside a secret location.
-		return false, false
+		return body
 	}
 }
 
-// matchSegs matches gitignore-style path segments, where "**" spans any number of them.
-func matchSegs(pat, segs []string) bool {
-	if len(pat) == 0 {
-		return len(segs) == 0
+// dirSegments splits a native directory path into lower-cased segments, mapping
+// `C:\x` to ["c", "x"] like Claude Code's POSIX form. An empty directory becomes a
+// placeholder segment that matches no real path.
+func dirSegments(dir, unknown string) []string {
+	s := strings.ToLower(strings.ReplaceAll(dir, `\`, "/"))
+	if windowsDrive.MatchString(s) {
+		s = s[:1] + "/" + s[3:]
 	}
-	if pat[0] == "**" {
-		return matchSegs(pat[1:], segs) || (len(segs) > 0 && matchSegs(pat, segs[1:]))
+	var out []string
+	for _, seg := range strings.Split(s, "/") {
+		if seg != "" {
+			out = append(out, seg)
+		}
 	}
-	return len(segs) > 0 && segMatch(pat[0], segs[0]) && matchSegs(pat[1:], segs[1:])
+	if len(out) == 0 {
+		return []string{unknown}
+	}
+	return out
 }
 
-func segMatch(pat, seg string) bool {
-	ok, err := path.Match(pat, seg)
-	return ok || err != nil // a malformed pattern counts as a match: be conservative
+// pathsIntersect reports whether some path is matched by both segment patterns.
+func pathsIntersect(a, b []string) bool {
+	memo := map[[2]int]bool{}
+	var f func(i, j int) bool
+	f = func(i, j int) bool {
+		if i == len(a) && j == len(b) {
+			return true
+		}
+		key := [2]int{i, j}
+		if v, ok := memo[key]; ok {
+			return v
+		}
+		memo[key] = false
+		res := false
+		switch {
+		case i < len(a) && a[i] == "**":
+			res = f(i+1, j) || (j < len(b) && f(i, j+1))
+		case j < len(b) && b[j] == "**":
+			res = f(i, j+1) || (i < len(a) && f(i+1, j))
+		case i < len(a) && j < len(b):
+			res = segmentsIntersect(a[i], b[j]) && f(i+1, j+1)
+		}
+		memo[key] = res
+		return res
+	}
+	return f(0, 0)
+}
+
+// segToken is one element of a single-segment glob.
+type segToken struct {
+	star bool // "*": any run of characters
+	any  bool // "?" or a [class]: any single character (classes are not modelled)
+	ch   rune
+}
+
+func tokenize(seg string) []segToken {
+	var out []segToken
+	rs := []rune(seg)
+	for i := 0; i < len(rs); i++ {
+		switch rs[i] {
+		case '*':
+			if len(out) == 0 || !out[len(out)-1].star {
+				out = append(out, segToken{star: true})
+			}
+		case '?':
+			out = append(out, segToken{any: true})
+		case '[':
+			end := slices.Index(rs[i+1:], ']')
+			if end < 0 {
+				out = append(out, segToken{ch: '['}) // unterminated: a literal
+				continue
+			}
+			out = append(out, segToken{any: true})
+			i += end + 1
+		default:
+			out = append(out, segToken{ch: rs[i]})
+		}
+	}
+	return out
+}
+
+// segmentsIntersect reports whether some file name is matched by both segment globs.
+// Character classes count as any character, so the answer errs towards "overlaps".
+func segmentsIntersect(x, y string) bool {
+	a, b := tokenize(x), tokenize(y)
+	memo := map[[2]int]bool{}
+	var f func(i, j int) bool
+	f = func(i, j int) bool {
+		if i == len(a) && j == len(b) {
+			return true
+		}
+		key := [2]int{i, j}
+		if v, ok := memo[key]; ok {
+			return v
+		}
+		memo[key] = false
+		res := false
+		switch {
+		case i < len(a) && a[i].star:
+			res = f(i+1, j) || (j < len(b) && f(i, j+1))
+		case j < len(b) && b[j].star:
+			res = f(i, j+1) || (i < len(a) && f(i+1, j))
+		case i < len(a) && j < len(b):
+			res = (a[i].any || b[j].any || a[i].ch == b[j].ch) && f(i+1, j+1)
+		}
+		memo[key] = res
+		return res
+	}
+	return f(0, 0)
+}
+
+// uncarvableReason explains why a "!" carve-out cannot reopen an allow entry
+// overlapping secret. The bare-secret case means the allow entry is not relative.
+func uncarvableReason(secret glob) string {
+	switch {
+	case secret.anchor != anchorBare:
+		return `a "!" exception only reaches unanchored relative rules, and this rule is anchored with "/", "~/" or "//"`
+	case strings.HasSuffix(secret.body, "**"):
+		return `the rule blocks a whole directory, and a "!" exception cannot reopen files inside a blocked directory`
+	default:
+		return `a "!" exception is read relative to the current directory, so a "~/" or absolute allow entry cannot be carved out`
+	}
 }
 
 // denyBlock builds agentleash's permissions.deny block for a policy:
@@ -165,10 +280,13 @@ func segMatch(pat, seg string) bool {
 //
 // Edit rules cover Write, Edit, MultiEdit and NotebookEdit, which Read rules do not.
 // The block goes first in permissions.deny so its "!" carve-outs only reach
-// agentleash's own rules. A secret glob that overlaps an allow_files entry but cannot
-// be carved (anchored or directory rules, non-relative allow entries) gets no native
-// rule at all, and a note explains that only the hook enforces it.
-func denyBlock(p *policy.Policy) (block, notes []string, err error) {
+// agentleash's own rules. When an allow_files entry overlaps a secret rule that a
+// carve-out cannot reach (anchored or directory rules, non-relative allow entries),
+// the native rule is kept anyway (fail closed) and a note explains that the allowed
+// file stays blocked by Claude Code's native layer.
+//
+// root and home locate project-relative and "~/" globs for the overlap test.
+func denyBlock(p *policy.Policy, root, home string) (block, notes []string, err error) {
 	var allows []glob
 	for _, a := range p.Secrets.AllowFiles {
 		g, err := parseGlob(a)
@@ -193,21 +311,19 @@ func denyBlock(p *policy.Policy) (block, notes []string, err error) {
 			continue
 		}
 		var carve []string
-		carvable := true
 		for _, a := range allows {
-			ov, dirOnly := overlap(s, a)
-			if !ov {
-				continue
+			ov, canCarve := overlap(s, a, root, home)
+			switch {
+			case !ov:
+			case canCarve:
+				carve = append(carve, "!"+a.body)
+			default:
+				// Fail closed: keep the native rule and say what it over-blocks.
+				notes = append(notes, fmt.Sprintf(
+					"allow_files %q stays blocked by Claude Code's native rules Read(%s)/Edit(%s) for secret %q, although the policy allows it: %s. "+
+						"agentleash keeps the native rule so the secret stays protected even if the hook does not run; read the file outside Claude Code, or narrow the secret glob",
+					a.raw, s.rulePath(), s.rulePath(), f, uncarvableReason(s)))
 			}
-			if s.anchor != anchorBare || dirOnly || !a.relative() {
-				carvable = false
-				notes = append(notes, fmt.Sprintf("secret %q overlaps allow_files %q, which Claude Code cannot carve out of an anchored or directory rule; no native Read/Edit rule is written for it and only the agentleash hook enforces it", f, a.raw))
-				break
-			}
-			carve = append(carve, "!"+a.body)
-		}
-		if !carvable {
-			continue
 		}
 		if r := s.rulePath(); !seen[r] {
 			seen[r] = true

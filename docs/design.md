@@ -188,10 +188,18 @@ permission prompt. Native `permissions.deny` rules use gitignore syntax: `Read(.
 cover Read and (best effort) Grep/Glob plus file commands Claude Code recognises in Bash
 (`cat`, `head`, `tail`, `sed`, redirections) but not arbitrary subprocesses or `grep -r .`;
 writes (Write/Edit/MultiEdit/NotebookEdit, `tee`, `> file`) need `Edit(...)` rules, so
-agentleash emits both. `allow_files` become `Read(!x)`/`Edit(!x)` carve-outs, which only
-reach the bare rules listed before them in the same file; agentleash's block therefore goes
-first in `permissions.deny`, and a secret glob that overlaps an allow entry but cannot be
-carved (anchored or directory rules) gets no native rule and is enforced by the hook only.
+agentleash emits both. Secret globs that match at any depth (`x`, `**/x`) are written as
+unanchored relative rules (`Read(.env.*)`); globs with an inner slash are anchored at the
+project root (`Read(/config/x.yml)`), `~/x` and absolute paths keep their `~/` and `//`
+anchors. `allow_files` become `Read(!x)`/`Edit(!x)` carve-outs, which only reach the
+unanchored relative rules listed before them in the same file (a `!` pattern is read
+relative to the current directory and cannot reopen files inside a blocked directory);
+agentleash's block therefore goes first in `permissions.deny`. Overlaps are computed
+precisely (a path must match both globs). When an allow entry overlaps a secret rule that
+cannot be carved (anchored or directory rules, `~/` or absolute allow entries), the native
+rule is **kept** (fail closed): the allowed file stays blocked by Claude Code's native
+layer although the policy and the hook allow it, and `apply` prints a note saying so
+(default policy: `~/.ssh/*.pub` under `Read(~/.ssh/**)`).
 `.claude/settings.json` is read from the session's primary working directory: start
 `claude` at the project root.
 
