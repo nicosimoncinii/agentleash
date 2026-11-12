@@ -13,6 +13,9 @@ go test -race ./...
 go run ./cmd/agentleash --help
 ```
 
+`go test ./e2e/ -v` runs the end-to-end tests: they build the binary and pipe real Claude Code
+and Codex hook payloads through `agentleash hook`.
+
 Optional: [`golangci-lint`](https://golangci-lint.run/) for `golangci-lint run`.
 
 ## Workflow

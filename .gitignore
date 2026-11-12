@@ -14,6 +14,7 @@ Thumbs.db
 
 # Local agent settings
 .claude/settings.local.json
+.claude/worktrees/
 *.bak
 
 # Test fixture secrets are dummy values and ARE committed:
