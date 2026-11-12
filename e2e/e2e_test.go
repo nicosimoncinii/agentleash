@@ -434,12 +434,6 @@ func patchInput(lines ...string) func(string) map[string]any {
 	return cmdInput(strings.Join(lines, "\n") + "\n")
 }
 
-// bugGlobStar is the issue tracking relative search globs treated as "anywhere".
-const bugGlobStar = "bug: Glob \"**/*.go\" is denied under the default policy (overlaps ~/.ssh/**) — see #23"
-
-// bugBackslashAbs is the issue tracking quoted Windows absolute paths in bash commands.
-const bugBackslashAbs = "bug: bash commands with a quoted backslash-separated path (cat 'C:\\proj\\.env') are allowed; Git Bash reads the secret — see #22"
-
 func runHookCases(t *testing.T, agent string, cases []hookCase, payload func(string, map[string]any, string) map[string]any) {
 	dir := setupProject(t)
 	for _, tc := range cases {
@@ -486,7 +480,7 @@ func TestClaudeHook(t *testing.T) {
 			},
 		},
 		{
-			name: "Bash cat absolute .env backslashes", tool: "Bash", want: "deny", os: "windows", skip: bugBackslashAbs,
+			name: "Bash cat absolute .env backslashes", tool: "Bash", want: "deny", os: "windows",
 			input: func(dir string) map[string]any {
 				return map[string]any{"command": "cat '" + filepath.Join(dir, ".env") + "'"}
 			},
@@ -503,7 +497,7 @@ func TestClaudeHook(t *testing.T) {
 				return map[string]any{"pattern": "API_KEY", "path": filepath.Join(dir, ".env")}
 			},
 		},
-		{name: "Glob go files", tool: "Glob", input: fileInput("pattern", "**/*.go"), want: "allow", skip: bugGlobStar},
+		{name: "Glob go files", tool: "Glob", input: fileInput("pattern", "**/*.go"), want: "allow"},
 		{name: "Glob src go files", tool: "Glob", input: fileInput("pattern", "src/*.go"), want: "allow"},
 		{name: "Glob .env*", tool: "Glob", input: fileInput("pattern", ".env*"), want: "deny"},
 		{name: "Write .env", tool: "Write", want: "deny", input: func(dir string) map[string]any {
@@ -833,7 +827,6 @@ func TestWindowsShortPathProject(t *testing.T) {
 	assertDecision(t, "claude", hook(t, dir, "claude", read(".env")), "deny")
 	assertDecision(t, "claude", hook(t, dir, "claude", read("id_rsa")), "deny")
 
-	t.Skip("bug: allow_files fail when the project path has an 8.3 short-name dir (.env.example denied) — see #26")
 	assertDecision(t, "claude", hook(t, dir, "claude", read(".env.example")), "allow")
 	cat := mustJSON(t, codexPayload("Bash", map[string]any{"command": "cat .env.example"}, short))
 	assertDecision(t, "codex", hook(t, dir, "codex", cat), "allow")

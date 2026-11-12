@@ -137,6 +137,12 @@ func evalPaths(paths []string, sec *secretSet, c *collector, verb string, search
 		arg := literalToInternal(p)
 		if search {
 			arg = globToInternal(p)
+			// A Glob/Grep pattern is relative to the search root (cwd), not
+			// "anywhere": "**/*.go" must not overlap ~/.ssh/** unless the
+			// search actually runs in or above the home directory.
+			if !isAbsInternal(strings.ToLower(arg)) && !strings.HasPrefix(arg, "~") {
+				arg = "./" + arg
+			}
 		}
 		if m, ok := sec.checkPath(arg); ok {
 			c.deny(RuleSecretFile+":"+m.pattern, secretFileReason(m, verb, sec))

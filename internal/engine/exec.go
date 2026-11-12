@@ -481,6 +481,9 @@ func (s *shellEval) dynamicSuspicious(name, cand string) bool {
 // curl-style @file and attached short-option values (-f.env).
 func argCandidates(alt string) []string {
 	out := []string{alt}
+	if w, ok := winPathVariant(alt); ok {
+		out = append(out, w)
+	}
 	add := func(s string) {
 		if s != "" && !containsStr(out, s) {
 			out = append(out, s)
@@ -517,6 +520,29 @@ func argCandidates(alt string) []string {
 		}
 	}
 	return out
+}
+
+var winPathRe = regexp.MustCompile(`^(?:[A-Za-z]:[\\/]|\.\.?\\|\\\\[^\\])`)
+
+// winPathVariant: in bash a backslash is an ordinary character, but Git
+// Bash on Windows (Claude Code's Bash tool) passes `cat 'C:\proj\.env'` to a
+// program that reads C:\proj\.env. A path-role argument that looks like a
+// Windows path is therefore also checked with `\` as a separator: a drive
+// prefix (C:\, C:/), .\ or ..\, a UNC \\host\ prefix, or a backslash used
+// between segments (sub\.env). A leading lone backslash (`\.env`, a regex
+// escape) does not count; grep/sed patterns are data and never get here.
+func winPathVariant(alt string) (string, bool) {
+	if isDynamic(alt) {
+		return "", false
+	}
+	t := unescapeKeepDyn(alt)
+	if !strings.Contains(t, `\`) {
+		return "", false
+	}
+	if !winPathRe.MatchString(t) && strings.HasPrefix(t, `\`) {
+		return "", false
+	}
+	return escapeLitWin(t), true
 }
 
 // pathOptions take a file path as their value (--opt=PATH).

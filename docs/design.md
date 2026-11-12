@@ -236,7 +236,10 @@ written for the agent to read, so they explain *what* was blocked and *how to pr
 
 The engine is pure: no disk writes, no network. The only optional filesystem access is an
 injected symlink resolver (`engine.WithSymlinkResolver(filepath.EvalSymlinks)`); without it
-the engine never touches the filesystem. A nil policy, an unknown `ToolKind` or a panic
+the engine never touches the filesystem. The resolver also canonicalises `ProjectRoot`, `Cwd`,
+`Home` and concrete argument paths (on Windows `EvalSymlinks` expands 8.3 short names such as
+`C:\Users\RUNNER~1`); when a path resolves, only its literal spellings and its canonical form
+are matched, so `allow_files` keep working (#26). A nil policy, an unknown `ToolKind` or a panic
 inside the engine all yield `deny`.
 
 ### 7.1 Secret path semantics (`secrets.files`, `allow_files`)
@@ -259,8 +262,10 @@ inside the engine all yield `deny`.
   joined with `Cwd`, `ProjectRoot` **and every directory a `cd`/`pushd`/`-C dir` (PowerShell
   `Set-Location`/`Push-Location`/`sl`, cmd `cd /d`, `%USERPROFILE%`) in the script may switch
   to** (a `cd` to a runtime value: see §7.7); `..` cleaning; **in bash a backslash is an
-  ordinary character** (`grep '\.env'` is a regex, not `/.env`), while in PowerShell, cmd and
-  file-tool paths `\` → `/`; drive letters, `/c/…`, `/mnt/c/…`, `/cygdrive/c/…`, `\\?\`; `/proc/*/cwd`;
+  ordinary character** (`grep '\.env'` is a regex, not `/.env`), except that a path-role
+  argument that looks like a Windows path (drive prefix `C:\`, `.\`/`..\`, UNC `\\host\`, or `\`
+  between segments as in `sub\.env`) is also checked with `\` → `/`, because Git Bash on Windows
+  reads `cat 'C:\proj\.env'` (#22); in PowerShell, cmd and file-tool paths `\` → `/`; drive letters, `/c/…`, `/mnt/c/…`, `/cygdrive/c/…`, `\\?\`; `/proc/*/cwd`;
   Windows trailing dots/spaces (`.env.`), alternate data streams (`.env::$DATA`) and 8.3 short
   names (`SECRE~1.YML`, only when the request paths look like Windows).
 - `allow_files` exempt **concrete** paths only. A glob or runtime-built argument that could
@@ -310,7 +315,10 @@ alias, and later paths through the link are also matched under the target
 runtime-built paths.
 
 File tools: `ToolRead`/`ToolWrite` deny any secret path in `Request.Paths`; `ToolSearch`
-allows a directory unless it is (inside) a secret and denies a glob that could match one.
+allows a directory unless it is (inside) a secret and denies a glob that could match one. A
+relative Glob/Grep pattern is anchored at the search root (`Cwd`), so `**/*.go` from the
+project only meets patterns that can match under the project; home-anchored patterns such as
+`~/.ssh/**` apply when the search runs in, above, or inside the home directory (#23).
 For `ToolShell`, `Request.Paths` is optional (e.g. Codex `apply_patch` run through
 `exec_command`); any secret path there denies the call.
 

@@ -60,9 +60,9 @@ type secretSet struct {
 }
 
 func newSecretSet(p *policy.Policy, req Request, resolve func(string) (string, error)) *secretSet {
-	s := &secretSet{home: normalizeAbs(req.Home), resolve: resolve, work: newBudget()}
-	root := normalizeAbs(req.ProjectRoot)
-	cwd := normalizeAbs(req.Cwd)
+	s := &secretSet{home: normalizeAbs(canonicalDir(req.Home, resolve)), resolve: resolve, work: newBudget()}
+	root := normalizeAbs(canonicalDir(req.ProjectRoot, resolve))
+	cwd := normalizeAbs(canonicalDir(req.Cwd, resolve))
 	if cwd != "" {
 		s.bases = append(s.bases, cwd)
 	}
@@ -508,24 +508,48 @@ func (s *secretSet) checkPath(arg string) (match, bool) {
 	if !s.work.spend(4*len(s.files) + 1) {
 		return match{}, false
 	}
-	for _, c := range s.candidates(arg) {
-		if m, ok := s.checkAbs(c); ok {
-			m.path = unescapeGlob(arg)
-			return m, true
-		}
-		if s.resolve != nil && !hasGlobMeta(c) {
+	cands := s.candidates(arg)
+	// When the injected resolver knows the real (canonical) path of a
+	// concrete argument, alternate spellings such as Windows 8.3 short
+	// names are moot: only the literal spellings and the canonical path
+	// are checked, so allow_files keep working under C:\Users\RUNNER~1\.
+	canonical := false
+	if s.resolve != nil && !hasGlobMeta(arg) {
+		for _, c := range cands {
+			if hasGlobMeta(c) {
+				continue
+			}
 			if r, err := s.resolve(unescapeGlob(c)); err == nil && r != "" {
-				rn := normalizeAbs(r)
-				if rn != c {
-					if m, ok := s.checkAbs(rn); ok {
-						m.path = unescapeGlob(arg)
-						return m, true
-					}
+				canonical = true
+				if m, ok := s.checkAbs(normalizeAbs(r)); ok {
+					m.path = unescapeGlob(arg)
+					return m, true
 				}
 			}
 		}
 	}
+	for _, c := range cands {
+		if canonical && hasGlobMeta(c) {
+			continue
+		}
+		if m, ok := s.checkAbs(c); ok {
+			m.path = unescapeGlob(arg)
+			return m, true
+		}
+	}
 	return match{}, false
+}
+
+// canonicalDir resolves a request directory through the injected resolver
+// (symlinks, Windows 8.3 short names), keeping the input when it fails.
+func canonicalDir(p string, resolve func(string) (string, error)) string {
+	if p == "" || resolve == nil {
+		return p
+	}
+	if r, err := resolve(p); err == nil && r != "" {
+		return r
+	}
+	return p
 }
 
 func (s *secretSet) checkAbs(c string) (match, bool) {

@@ -502,7 +502,13 @@ func (s *shellEval) checkRedirect(r *syntax.Redirect) {
 	if input {
 		verb = "reading"
 	}
-	for _, alt := range s.wordAlts(r.Word, modePattern) {
+	alts := append([]string(nil), s.wordAlts(r.Word, modePattern)...) // copy: memoised
+	for _, a := range alts {
+		if w, ok := winPathVariant(a); ok {
+			alts = append(alts, w) // `cat < 'C:\proj\.env'` under Git Bash
+		}
+	}
+	for _, alt := range alts {
 		m, ok := s.sec.checkPath(alt)
 		if !ok {
 			continue

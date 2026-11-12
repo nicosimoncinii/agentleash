@@ -81,3 +81,18 @@ cases:
     command: cd ~ && cat .aws/credentials
     expect: deny
     note: A relative path after cd ~ resolves into the home directory.
+  - name: windows backslash absolute path
+    tool: shell
+    command: cat 'C:\proj\.env'
+    expect: deny
+    note: Git Bash on Windows reads C:\proj\.env; backslash-separated path arguments must also be checked with \ as a separator (#22).
+  - name: windows backslash project path
+    tool: shell
+    command: cat '{{project}}\.env'
+    expect: deny
+    note: The project path joined with a Windows separator (#22).
+  - name: windows dot-backslash relative path
+    tool: shell
+    command: cat '.\.env'
+    expect: deny
+    note: A .\ prefix as written by Windows-trained agents (#22).
