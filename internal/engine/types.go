@@ -8,9 +8,12 @@ package engine
 type Decision string
 
 const (
+	// Allow lets the tool call proceed.
 	Allow Decision = "allow"
-	Ask   Decision = "ask"
-	Deny  Decision = "deny"
+	// Ask requires the user to confirm the call (agents without "ask" support treat it as Deny).
+	Ask Decision = "ask"
+	// Deny blocks the call; Verdict.Reason explains why and how to proceed.
+	Deny Decision = "deny"
 )
 
 // ToolKind classifies the agent tool being invoked.
@@ -33,8 +36,13 @@ const (
 type Shell string
 
 const (
-	ShellBash       Shell = "bash"
+	// ShellBash is bash or a POSIX shell; it is the default when Shell is empty.
+	ShellBash Shell = "bash"
+	// ShellPowerShell is Windows PowerShell or pwsh.
 	ShellPowerShell Shell = "powershell"
+	// ShellAuto means the dialect is unknown (e.g. Codex exec_command): the command is
+	// analysed as bash, as PowerShell and with a cmd.exe pass; the strictest verdict wins.
+	ShellAuto Shell = "auto"
 )
 
 // Request is an agent-independent description of a tool call.
@@ -44,7 +52,9 @@ type Request struct {
 	Command string
 	// Shell is the dialect of Command (defaults to bash).
 	Shell Shell
-	// Paths are the file or directory paths touched by non-shell tools.
+	// Paths are the file or directory paths touched by non-shell tools. For ToolShell they
+	// are optional extra paths the command is known to touch (e.g. an apply_patch heredoc
+	// run through exec_command); any secret among them denies the call.
 	Paths []string
 	// Cwd is the working directory of the call (absolute).
 	Cwd string

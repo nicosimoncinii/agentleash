@@ -1,28 +1,149 @@
 package engine
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/nicosimoncinii/agentleash/internal/policy"
-	"mvdan.cc/sh/v3/syntax"
 )
+
+// maxDepth bounds recursion into nested shells (sh -c, eval, pwsh -c, ...).
+// Deeper nesting is denied.
+const maxDepth = 8
 
 // Engine evaluates requests against a policy. It is safe for concurrent use.
 type Engine struct {
-	policy *policy.Policy
+	policy  *policy.Policy
+	resolve func(string) (string, error)
+}
+
+// Option configures an Engine.
+type Option func(*Engine)
+
+// WithSymlinkResolver injects a function (typically filepath.EvalSymlinks)
+// used to resolve concrete argument paths before matching them against
+// secret globs. Without it the engine performs no filesystem access at all.
+// Errors (e.g. the file does not exist) are ignored.
+func WithSymlinkResolver(fn func(string) (string, error)) Option {
+	return func(e *Engine) { e.resolve = fn }
 }
 
 // New builds an Engine for a validated policy.
-func New(p *policy.Policy) *Engine {
-	return &Engine{policy: p}
+func New(p *policy.Policy, opts ...Option) *Engine {
+	e := &Engine{policy: p}
+	for _, o := range opts {
+		o(e)
+	}
+	return e
 }
 
 // Evaluate decides whether a tool call may proceed.
 // Precedence: deny > ask > allow. Fails closed on any doubt.
-// TODO(engine): implement (issue: engine).
-func (e *Engine) Evaluate(req Request) Verdict {
-	if req.Tool == ToolShell {
-		if _, err := syntax.NewParser().Parse(stringsReader(req.Command), ""); err != nil {
-			return Verdict{Decision: Deny, Reason: "agentleash: could not parse shell command; blocked to be safe", Rule: "parse-error"}
+func (e *Engine) Evaluate(req Request) (v Verdict) {
+	defer func() {
+		if r := recover(); r != nil {
+			v = Verdict{
+				Decision: Deny,
+				Rule:     RuleInternal,
+				Reason:   reasonPrefix + fmt.Sprintf("internal error while checking this call (%v); blocked to be safe. Try a simpler command.", r),
+			}
+		}
+	}()
+	if e == nil || e.policy == nil {
+		return Verdict{Decision: Deny, Rule: RuleNoPolicy, Reason: reasonPrefix + "no policy is loaded; blocked to be safe. Run `agentleash doctor`."}
+	}
+	sec := newSecretSet(e.policy, req, e.resolve)
+	c := &collector{}
+	switch req.Tool {
+	case ToolShell:
+		if len(req.Command) > maxCommandBytes {
+			c.deny(RuleTooComplex, tooComplexReason)
+			break
+		}
+		e.evalShell(req, sec, c)
+	case ToolRead:
+		evalPaths(req.Paths, sec, c, "reading", false)
+	case ToolWrite:
+		evalPaths(req.Paths, sec, c, "writing", false)
+	case ToolSearch:
+		evalPaths(req.Paths, sec, c, "searching", true)
+	case ToolOther:
+	default:
+		c.deny(RuleUnknownTool, fmt.Sprintf("unknown tool kind %q; blocked to be safe.", display(string(req.Tool))))
+	}
+	if sec.work.exhausted() {
+		// Analysis stopped early: whatever was found so far is incomplete.
+		return Verdict{Decision: Deny, Rule: RuleTooComplex, Reason: reasonPrefix + tooComplexReason}
+	}
+	return c.verdict()
+}
+
+func (e *Engine) evalShell(req Request, sec *secretSet, c *collector) {
+	// Paths touched by the shell call itself (e.g. Codex apply_patch run
+	// through exec_command) are checked like file-tool paths.
+	evalPaths(req.Paths, sec, c, "modifying", false)
+	switch req.Shell {
+	case ShellBash, "":
+		newShellEval(e, sec, c, 0).withReq(req).run(req.Command)
+	case ShellPowerShell:
+		pe := newPwshEval(e, sec, c, 0)
+		pe.req = req
+		if !pe.run(req.Command) {
+			c.deny(RuleParseError, "could not tokenize the PowerShell command (unterminated quote or here-string), so it was blocked to be safe.")
+		}
+	default:
+		e.evalAuto(req, sec, c)
+	}
+}
+
+// evalAuto handles ShellAuto (and unknown dialects): the command is analysed
+// as bash, as PowerShell and with a cmd.exe pass; the strictest verdict
+// wins. A dialect that fails to parse contributes nothing, but then a raw
+// lexical check also runs; if no dialect parses, the call is denied.
+//
+// When bash parses cleanly, bash already analysed every argument: here-doc
+// bodies are blanked out and the PowerShell/cmd passes only look at
+// constructs specific to those dialects ($env:, %VAR%, cmdlets, type, ...),
+// so commit messages or printf data mentioning ".env" are not treated as
+// arguments by the other dialects.
+func (e *Engine) evalAuto(req Request, sec *secretSet, c *collector) {
+	sh := newShellEval(e, sec, c, 0).withReq(req)
+	sh.ignoreParseErrors = true
+	bashOK := sh.run(req.Command)
+	text := req.Command
+	if bashOK {
+		text = blankHeredocs(req.Command)
+	}
+	pe := newPwshEval(e, sec, c, 0)
+	pe.req = req
+	pe.restricted = bashOK
+	psOK := sec.work.exhausted() || pe.run(text)
+	cmdOK := sec.work.exhausted() || evalCmdText(e, req, sec, c, 0, text, bashOK)
+	switch {
+	case !bashOK && !psOK && !cmdOK:
+		c.deny(RuleParseError, "the command could not be parsed as bash, PowerShell or cmd, so it was blocked to be safe. Simplify the quoting.")
+	case !bashOK || !psOK || !cmdOK:
+		lexicalCheck(sec, c, text, bashOK)
+	}
+}
+
+// evalPaths handles the file tools. For search tools a directory is fine
+// unless it is (inside) a secret; globs are denied when they could match one.
+func evalPaths(paths []string, sec *secretSet, c *collector, verb string, search bool) {
+	for _, p := range paths {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		arg := literalToInternal(p)
+		if search {
+			arg = globToInternal(p)
+		}
+		if m, ok := sec.checkPath(arg); ok {
+			c.deny(RuleSecretFile+":"+m.pattern, secretFileReason(m, verb, sec))
+			continue
+		}
+		if m, ok := sec.dirHoldsSecret(arg); ok {
+			c.deny(RuleSecretFile+":"+m.pattern, dirReason(m, verb, sec))
 		}
 	}
-	return Verdict{Decision: Allow}
 }
