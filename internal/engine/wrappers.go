@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -53,12 +54,21 @@ func (s *shellEval) unwrap(name string, args []cmdArg, _ *stdinInfo) (inner, own
 	switch name {
 	case "env":
 		return s.unwrapEnv(args)
-	case "dotenv", "dotenvx", "direnv", "op", "doppler", "infisical", "envchain", "aws-vault", "chamber":
+	case "dotenv", "dotenv-cli", "dotenvx", "direnv", "op", "doppler", "infisical", "envchain", "aws-vault", "chamber":
+		if s.dotenvPrints(name, args) {
+			return nil, args, true
+		}
+		if name == "dotenv-cli" {
+			name = "dotenv"
+		}
 		return unwrapSecretRunner(name, args)
 	case "su", "runuser", "script", "sg", "flock":
 		return s.unwrapStringCmd(name, args)
 	case "watch":
 		return s.unwrapWatch(args)
+	}
+	if rs, ok := runnerSpecs[name]; ok {
+		return s.unwrapRunner(name, rs, args)
 	}
 	spec, ok := wrapSpecs[name]
 	if !ok {
@@ -127,6 +137,24 @@ func unwrapSecretRunner(name string, args []cmdArg) (inner, own []cmdArg, ok boo
 		}
 	}
 	i := 0
+	if name == "dotenv" {
+		// python-dotenv: dotenv [-f FILE] run CMD
+		for i < len(args) {
+			t, ok := args[i].text()
+			if !ok || !strings.HasPrefix(t, "-") {
+				break
+			}
+			if t == "-f" || t == "--file" || t == "-e" || t == "-v" || t == "-c" {
+				i++
+			}
+			i++
+		}
+		if i < len(args) && args[i].textOr() == "run" {
+			i++
+		} else {
+			i = 0
+		}
+	}
 	if name != "dotenv" && name != "envchain" {
 		// skip to the run/exec subcommand
 		for i < len(args) {
@@ -372,20 +400,10 @@ func (s *shellEval) xargsCommand(args []cmdArg, stdin *stdinInfo) {
 		inner = []cmdArg{litArg("echo")}
 	}
 	var stdinArgs []cmdArg
-	switch {
-	case fromFile || stdin == nil || stdin.kind == stdinUnknown || stdin.kind == stdinFile || stdin.decode:
+	if fromFile {
 		stdinArgs = []cmdArg{dynArg()}
-	case stdin.kind == stdinGlob:
-		stdinArgs = []cmdArg{{alts: stdin.texts}}
-	default:
-		for _, t := range stdin.texts {
-			for _, f := range strings.Fields(t) {
-				stdinArgs = append(stdinArgs, litArg(strings.Trim(f, `"'`)))
-			}
-		}
-		if len(stdinArgs) > 64 {
-			stdinArgs = []cmdArg{dynArg()}
-		}
+	} else {
+		stdinArgs = stdinWords(stdin)
 	}
 	if replace != "" {
 		var all []string
@@ -412,6 +430,99 @@ func (s *shellEval) xargsCommand(args []cmdArg, stdin *stdinInfo) {
 		inner = append(inner, stdinArgs...)
 	}
 	s.processCommand(inner, nil)
+}
+
+// stdinWords returns the words a pipeline producer writes, as arguments:
+// static text split on whitespace, find/git ls-files globs, or a runtime
+// value when the producer is unknown (ls, cat FILE, a decoder, a terminal).
+func stdinWords(stdin *stdinInfo) []cmdArg {
+	var out []cmdArg
+	switch {
+	case stdin == nil || stdin.kind == stdinUnknown || stdin.kind == stdinFile || stdin.decode:
+		return []cmdArg{dynArg()}
+	case stdin.kind == stdinGlob:
+		return []cmdArg{{alts: stdin.texts}}
+	}
+	for _, t := range stdin.texts {
+		for _, f := range strings.Fields(t) {
+			out = append(out, litArg(strings.Trim(f, `"'`)))
+		}
+	}
+	if len(out) > 64 {
+		return []cmdArg{dynArg()}
+	}
+	return out
+}
+
+// cpioOutMode reports whether a cpio short-option cluster ("-o", "-vo",
+// "-pdm") selects copy-out or pass-through mode. Letters after an option that
+// takes a value (-H newc, -Ffile, ...) are that value, not options.
+func cpioOutMode(t string) bool {
+	for _, c := range t[1:] {
+		switch {
+		case c == 'o' || c == 'p':
+			return true
+		case strings.ContainsRune("HFOIMCERW", c):
+			return false
+		}
+	}
+	return false
+}
+
+// checkFileList checks the names an archiver reads from stdin. Static words
+// and find/git ls-files globs are checked like xargs input; any other source
+// (a file, an unknown producer, a terminal) is an opaque list and is denied
+// with a reason that says where the list comes from.
+func (s *shellEval) checkFileList(name string, stdin *stdinInfo) {
+	if stdin != nil && !stdin.decode && (stdin.kind == stdinStatic || stdin.kind == stdinGlob) {
+		s.checkArgs(name, stdinWords(stdin))
+		return
+	}
+	src := "stdin"
+	switch {
+	case stdin != nil && stdin.kind == stdinFile && stdin.path != "":
+		src = display(stdin.path)
+	case stdin != nil && stdin.kind == stdinFile:
+		src = "a redirected file"
+	case stdin != nil:
+		src = "the output of the previous pipeline command"
+	}
+	s.c.deny(RuleDynamicPath, fmt.Sprintf("`%s` reads the list of files to archive from %s, which agentleash cannot inspect; it could include secret files. Name the files on the command line, or produce the list with `find ... -name PATTERN` or `git ls-files PATHSPEC` in the same pipeline.", name, src))
+}
+
+// readsFileList reports whether an archiver takes the list of files to read
+// from stdin: cpio -o/-p, tar -T -/--files-from=-, zip -@/--names-stdin.
+func readsFileList(name string, args []cmdArg) bool {
+	isStdin := func(t string) bool { return t == "-" || t == "/dev/stdin" }
+	for i, a := range args {
+		t, ok := a.text()
+		if !ok {
+			continue
+		}
+		next := ""
+		if i+1 < len(args) {
+			next, _ = args[i+1].text()
+		}
+		short := strings.HasPrefix(t, "-") && !strings.HasPrefix(t, "--") && len(t) > 1
+		switch name {
+		case "cpio":
+			if t == "--create" || t == "--pass-through" || (short && cpioOutMode(t)) {
+				return true
+			}
+		case "tar":
+			if (t == "--files-from" || (short && strings.HasSuffix(t, "T"))) && isStdin(next) {
+				return true
+			}
+			if t == "-T-" || (strings.HasPrefix(t, "--files-from=") && isStdin(strings.TrimPrefix(t, "--files-from="))) {
+				return true
+			}
+		case "zip":
+			if t == "--names-stdin" || (short && strings.Contains(t, "@")) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // findCommand handles find, including -exec/-execdir/-ok.
@@ -586,4 +697,235 @@ func quotePS(t string) string {
 		return "'" + strings.ReplaceAll(t, "'", "''") + "'"
 	}
 	return t
+}
+
+// runnerSpec describes a package/project runner that executes another
+// command: npx, pnpm dlx, poetry run, ... The inner command is analysed like
+// any other (npx dotenv-cli -- printenv is an env dump).
+type runnerSpec struct {
+	subs       map[string]bool // subcommands that run a command (nil: none needed)
+	value      map[string]bool // options taking a separate value (before or after the subcommand)
+	call       map[string]bool // options whose value is a shell string (npx -c 'cmd')
+	shell      map[string]bool // flags that run the joined command through a shell (pnpm dlx -c)
+	positional int             // positional arguments before the command (envdir DIR)
+}
+
+var (
+	npmValue  = set("-p", "--package", "-w", "--workspace", "--prefix", "--cache", "--registry", "--userconfig")
+	pyRunOpts = set("-C", "--directory", "-P", "--project", "--env-file", "--with", "--with-requirements",
+		"--python", "-p", "--package", "--extra", "--group", "--index", "--index-url", "--extra-index-url",
+		"--from", "-e", "--env", "-f", "--procfile", "-d", "--root", "--app-root", "-n", "--name", "--prefix",
+		"--spec", "--pip-args", "--venv")
+	runnerSpecs = map[string]runnerSpec{
+		"npx":     {value: npmValue, call: set("-c", "--call")},
+		"pnpx":    {value: npmValue, call: set("-c", "--call")},
+		"bunx":    {value: npmValue},
+		"npm":     {subs: set("exec", "x"), value: npmValue, call: set("-c", "--call")},
+		"pnpm":    {subs: set("dlx", "exec"), value: set("-C", "--dir", "--filter", "-F", "--package", "--workspace-dir"), shell: set("-c", "--shell-mode")},
+		"yarn":    {subs: set("dlx", "exec"), value: npmValue},
+		"bun":     {subs: set("x"), value: npmValue},
+		"poetry":  {subs: set("run"), value: pyRunOpts},
+		"pipenv":  {subs: set("run"), value: pyRunOpts},
+		"pdm":     {subs: set("run"), value: pyRunOpts},
+		"hatch":   {subs: set("run"), value: pyRunOpts},
+		"uv":      {subs: set("run"), value: pyRunOpts},
+		"uvx":     {value: pyRunOpts},
+		"pipx":    {subs: set("run"), value: pyRunOpts},
+		"conda":   {subs: set("run"), value: pyRunOpts},
+		"foreman": {subs: set("run"), value: pyRunOpts},
+		"honcho":  {subs: set("run"), value: pyRunOpts},
+		"envdir":  {positional: 1},
+	}
+)
+
+// unwrapRunner returns the command a runner executes. A runner used without
+// a run subcommand (npm install, poetry add) is not a wrapper (ok=false).
+func (s *shellEval) unwrapRunner(name string, rs runnerSpec, args []cmdArg) (inner, own []cmdArg, ok bool) {
+	i := 0
+	subSeen := rs.subs == nil
+	shellMode := false
+scan:
+	for i < len(args) {
+		t, static := args[i].text()
+		switch {
+		case !static:
+			break scan
+		case t == "--":
+			i++
+			if subSeen {
+				break scan
+			}
+		case rs.call[t] && i+1 < len(args):
+			s.evalString(args[i+1:i+2], name+" "+t)
+			return nil, args, true
+		case strings.HasPrefix(t, "--call=") && rs.call["--call"]:
+			s.recurseText(strings.TrimPrefix(t, "--call="), false)
+			return nil, args, true
+		case rs.shell[t]:
+			shellMode = true
+			i++
+		case rs.value[t]:
+			i += 2
+		case strings.HasPrefix(t, "-") && t != "-":
+			i++
+		case !subSeen:
+			if !rs.subs[t] {
+				return nil, nil, false
+			}
+			subSeen = true
+			i++
+		default:
+			break scan
+		}
+	}
+	if !subSeen {
+		return nil, nil, false
+	}
+	i += rs.positional
+	if i >= len(args) {
+		return nil, args, true
+	}
+	if shellMode {
+		s.evalString(args[i:], name+" -c")
+		return nil, args[:i], true
+	}
+	return args[i:], args[:i], true
+}
+
+// implicitEnvFile denies a command that loads and prints a dotenv file
+// without naming it on the command line (dotenv list, docker compose
+// config). It reports whether file is secret under the policy (and denied).
+func (s *shellEval) implicitEnvFile(cmd, file, advice string) bool {
+	m, ok := s.sec.checkPath(escapeLit(file))
+	if !ok || m.glob {
+		return false
+	}
+	m.path = file
+	s.c.deny(RuleSecretFile+":"+m.pattern, secretFileReason(m, "`"+cmd+"` loading and printing", s.sec)+" "+advice)
+	return true
+}
+
+// dotenvPrints handles the subcommands of dotenv CLIs that print values of
+// ./.env (or of the file given with -f): python-dotenv `list`/`get`,
+// dotenvx `get`/`decrypt --stdout`/`keypair`, dotenv-cli `-p NAME`.
+// It reports whether the command was fully handled.
+func (s *shellEval) dotenvPrints(name string, args []cmdArg) bool {
+	if name != "dotenv" && name != "dotenv-cli" && name != "dotenvx" {
+		return false
+	}
+	explicitFile := false
+	sub := ""
+scan:
+	for i := 0; i < len(args); i++ {
+		t := args[i].textOr()
+		switch {
+		case t == "--":
+			break scan
+		case t == "-f" || t == "--file" || t == "--env-file" || (name != "dotenvx" && t == "-e"):
+			explicitFile = true // the file itself is path-checked as an argument
+			i++
+		case strings.HasPrefix(t, "--file=") || strings.HasPrefix(t, "--env-file="):
+			explicitFile = true
+		case t == "-p" && name != "dotenvx" && i+1 < len(args):
+			// dotenv-cli -p NAME prints one variable loaded from .env
+			s.printenvCommand(args[i+1 : i+2])
+			s.checkArgs(name, args)
+			return true
+		case strings.HasPrefix(t, "-"):
+			if name != "dotenvx" && (t == "-q" || t == "--quote" || t == "-v" || t == "-c") {
+				i++
+			}
+		default:
+			sub = t
+			break scan
+		}
+	}
+	file := ".env"
+	switch {
+	case name == "dotenvx" && sub == "keypair":
+		file = ".env.keys"
+	case name == "dotenvx" && sub == "decrypt" && hasArg(args, "--stdout"):
+	case name == "dotenvx" && sub == "get":
+	case name != "dotenvx" && (sub == "list" || sub == "get"):
+	default:
+		return false
+	}
+	if !explicitFile { // a file given with -f is path-checked as an argument
+		s.implicitEnvFile(name+" "+sub, file, "Read .env.example for the variable names instead.")
+	}
+	s.checkArgs(name, args)
+	return true
+}
+
+var (
+	composeValueOpts   = set("-f", "--file", "-p", "--project-name", "--profile", "--env-file", "--project-directory", "--ansi", "--progress", "--parallel")
+	composeConfigQuiet = set("-q", "--quiet", "--services", "--volumes", "--images", "--profiles", "--networks", "--hash", "--no-interpolate")
+	// containerGlobalValueOpts are docker/podman/nerdctl global options that
+	// take a separate value (docker --context prod compose config).
+	containerGlobalValueOpts = set("-c", "--context", "-H", "--host", "--config", "-l", "--log-level",
+		"--tlscacert", "--tlscert", "--tlskey", "--connection", "--url", "--identity", "--root", "--runroot",
+		"--storage-driver", "--storage-opt", "--cgroup-manager", "--events-backend", "--runtime", "--tmpdir",
+		"--module", "-n", "--namespace", "-a", "--address", "--snapshotter", "--data-root", "--cni-path",
+		"--cni-netconfpath", "--hosts-dir")
+)
+
+// composeConfig: `docker compose config` (alias convert) loads ./.env, or
+// the files given with --env-file instead, and prints the configuration with
+// every variable interpolated. Listing flags (--services, --volumes, ...), -q
+// and --no-interpolate print no values.
+func (s *shellEval) composeConfig(name string, args []cmdArg) {
+	i := 0
+	if name == "docker" || name == "podman" || name == "nerdctl" {
+		for i < len(args) && args[i].textOr() != "compose" {
+			t := args[i].textOr()
+			switch {
+			case containerGlobalValueOpts[t]:
+				i += 2
+			case strings.HasPrefix(t, "-"):
+				i++ // a flag, --opt=value or -Hvalue
+			default:
+				return // another docker subcommand
+			}
+		}
+		i++
+	}
+	sub := ""
+	var envFiles []string
+	for ; i < len(args) && sub == ""; i++ {
+		t := args[i].textOr()
+		switch {
+		case t == "--env-file" && i+1 < len(args):
+			envFiles = append(envFiles, args[i+1].textOr())
+			i++
+		case strings.HasPrefix(t, "--env-file="):
+			envFiles = append(envFiles, strings.TrimPrefix(t, "--env-file="))
+		case composeValueOpts[t]:
+			i++
+		case strings.HasPrefix(t, "-"):
+		default:
+			sub = t
+		}
+	}
+	if sub != "config" && sub != "convert" {
+		return
+	}
+	for _, a := range args[i:] {
+		if composeConfigQuiet[strings.SplitN(a.textOr(), "=", 2)[0]] {
+			return
+		}
+	}
+	if len(envFiles) == 0 {
+		envFiles = []string{".env"} // Compose v2: --env-file replaces the default .env
+	}
+	advice := "Use `docker compose config -q` to validate, `--services`/`--volumes` to list, or `--no-interpolate` to see the file without values."
+	secretFile := false
+	for _, f := range envFiles {
+		// A runtime-built --env-file is denied by the argument check.
+		secretFile = s.implicitEnvFile(name+" compose "+sub, f, advice) || secretFile
+	}
+	if !secretFile && len(s.sec.env) > 0 {
+		// Variables the compose file references are also taken from the
+		// process environment, and we cannot see which ones.
+		s.c.ask(RuleEnvExposure, "`"+name+" compose "+sub+"` interpolates variables from the environment into its output, which may include secret variables (secrets.env); the user must confirm. "+advice)
+	}
 }

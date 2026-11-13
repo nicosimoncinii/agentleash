@@ -133,6 +133,9 @@ func (s *shellEval) processNamed(nameAlt string, args []cmdArg, stdin *stdinInfo
 		return
 	case name == "docker" || name == "podman" || name == "nerdctl":
 		s.containerEnv(rest)
+		s.composeConfig(name, rest)
+	case name == "docker-compose" || name == "podman-compose":
+		s.composeConfig(name, rest)
 	case name == "printenv":
 		s.printenvCommand(rest)
 		return
@@ -148,6 +151,10 @@ func (s *shellEval) processNamed(nameAlt string, args []cmdArg, stdin *stdinInfo
 				s.c.deny(RuleEnvExposure, "`ps` with the BSD `e` option prints the environment of processes, which contains secrets. Use `ps aux` without `e`.")
 				return
 			}
+			if strings.HasPrefix(t, "-") && !strings.HasPrefix(t, "--") && strings.ContainsRune(t, 'E') {
+				s.c.deny(RuleEnvExposure, "`ps -E` prints the environment of processes, which contains secrets. Use `ps -ef` or `ps aux` instead.")
+				return
+			}
 		}
 	case name == "systemctl" || name == "tmux" || name == "launchctl":
 		for _, a := range rest {
@@ -156,6 +163,10 @@ func (s *shellEval) processNamed(nameAlt string, args []cmdArg, stdin *stdinInfo
 				s.c.deny(RuleEnvExposure, envDumpReason)
 				return
 			}
+		}
+		if name == "launchctl" && len(rest) > 0 && rest[0].textOr() == "getenv" {
+			s.printenvCommand(rest[1:]) // launchctl getenv NAME prints one variable
+			return
 		}
 	case name == "source" || name == ".":
 		if len(rest) > 0 {
@@ -172,6 +183,10 @@ func (s *shellEval) processNamed(nameAlt string, args []cmdArg, stdin *stdinInfo
 		}
 	}
 	if interpreters[name] {
+		if len(rest) > 1 && rest[0].textOr() == "-m" && rest[1].textOr() == "dotenv" {
+			// python -m dotenv list: the python-dotenv CLI
+			s.processCommand(append([]cmdArg{litArg("dotenv")}, rest[2:]...), stdin)
+		}
 		s.interpreterCommand(name, rest, stdin)
 	}
 	checkName := name
@@ -183,6 +198,15 @@ func (s *shellEval) processNamed(nameAlt string, args []cmdArg, stdin *stdinInfo
 		argsToCheck = s.checkCopyDest(name, argsToCheck)
 	}
 	s.checkArgs(checkName, argsToCheck)
+	if readsFileList(name, rest) {
+		s.checkFileList(name, stdin)
+	}
+	if name == "sed" {
+		s.sedSubstExec(rest)
+	}
+	if name == "sqlite3" {
+		s.sqliteCommand(rest, stdin)
+	}
 	if recursiveCopiers[name] {
 		s.checkRecursiveCopy(name, rest)
 	}
@@ -508,15 +532,30 @@ func argCandidates(alt string) []string {
 			}
 		}
 	}
-	for _, c := range append([]string(nil), out...) {
+	// Worklist: a piece found here is split again, so "-sd@.env" gives
+	// "@.env" and then ".env".
+	for i := 0; i < len(out) && i < 32; i++ {
+		c := out[i]
 		if strings.HasPrefix(c, "@") {
 			add(c[1:])
 		}
 		if len(c) > 2 && c[0] == '-' && c[1] != '-' && isAlpha(c[1]) {
 			add(c[2:])
+			// value attached after a short-option cluster: -sd@.env, -xf.env
+			k := 1
+			for k < len(c) && isAlpha(c[k]) {
+				k++
+			}
+			if k > 2 && k < len(c) {
+				add(c[k:])
+			}
 		}
 		if strings.HasPrefix(c, "<") || strings.HasPrefix(c, ">") {
 			add(strings.TrimLeft(c, "<>"))
+		}
+		// name@file (curl --data-urlencode, httpie f@file, f:=@file)
+		if j := strings.IndexByte(c, '@'); j > 0 && !strings.HasPrefix(c, "-") {
+			add(c[j+1:])
 		}
 	}
 	return out
@@ -552,7 +591,8 @@ var pathOptions = set("--file", "--env-file", "--from-env-file", "--from-file", 
 	"--data", "--data-urlencode", "--upload-file", "--arg-file", "--include-file", "--path", "--source",
 	"--src", "--target", "--output", "--out", "--log-file", "--kubeconfig", "--credentials", "--netrc-file",
 	"--settings", "--userconfig", "--globalconfig", "--dotenv", "--envfile", "--secrets", "--json-file",
-	"--keystore", "--truststore", "--token-file", "--pem", "--read", "--load", "--require", "--import")
+	"--keystore", "--truststore", "--token-file", "--pem", "--read", "--load", "--require", "--import",
+	"--post-file", "--body-file", "--files0-from")
 
 // optionValue returns the value of KEY=VALUE that may be a path: always for
 // plain words (dd if=.env, VAR=.env), for --options only when the option
@@ -757,6 +797,10 @@ func (s *shellEval) checkRecursiveCopy(name string, args []cmdArg) {
 			recursive = true
 		case (name == "cp" || name == "zip" || name == "scp") && strings.HasPrefix(t, "-") && !strings.HasPrefix(t, "--") && strings.ContainsAny(t, "rRa"):
 			recursive = true
+		case name == "diff" && (t == "-x" || t == "-X" || strings.HasPrefix(t, "--exclude")):
+			return // the agent is already excluding files
+		case name == "diff" && strings.HasPrefix(t, "-") && !strings.HasPrefix(t, "--") && strings.ContainsRune(t, 'r'):
+			recursive = true
 		case t == "--recursive" || t == "--archive":
 			recursive = true
 		}
@@ -770,7 +814,10 @@ func (s *shellEval) checkRecursiveCopy(name string, args []cmdArg) {
 			if strings.HasPrefix(t, "-") || isDynamic(alt) {
 				continue
 			}
-			if m, ok := s.sec.containsSecretRoot(alt); ok {
+			if m, ok := s.sec.containsSecretRoot(alt); ok && name == "diff" {
+				s.c.ask(RuleSecretDir, fmt.Sprintf("`diff -r` over %q would print the content of secret files (secrets.files: %q), e.g. with -N or when they differ. Compare only the directories you need, or exclude them (-x '.env*').", display(t), m.pattern))
+				return
+			} else if ok {
 				s.c.ask(RuleSecretDir, fmt.Sprintf("`%s` would copy %q recursively, which includes secret files (secrets.files: %q). Exclude them explicitly or copy only the directories you need.", name, display(t), m.pattern))
 				return
 			}

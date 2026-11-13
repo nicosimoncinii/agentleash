@@ -25,7 +25,7 @@ var readers = set(
 	"strings", "od", "xxd", "hexdump", "hd", "base64", "base32", "basenc", "uuencode",
 	"md5sum", "sha1sum", "sha224sum", "sha256sum", "sha384sum", "sha512sum", "b2sum", "cksum", "sum",
 	"cp", "mv", "scp", "rsync", "dd", "tee", "install", "ln", "link",
-	"tar", "zip", "unzip", "gzip", "gunzip", "zcat", "bzip2", "bzcat", "xz", "xzcat", "zstd", "zstdcat", "7z", "7za", "lz4",
+	"tar", "zip", "cpio", "unzip", "gzip", "gunzip", "zcat", "bzip2", "bzcat", "xz", "xzcat", "zstd", "zstdcat", "7z", "7za", "lz4",
 	"openssl", "gpg", "age", "curl", "wget", "nc", "ncat", "netcat", "socat", "ssh", "sftp",
 	"source", ".", "split", "csplit", "fold", "fmt", "pr", "expand", "unexpand", "column", "look",
 	"iconv", "envsubst", "m4", "sops", "file", "wc", "type", "xargs", "readarray", "mapfile",
@@ -91,7 +91,7 @@ var embeddedHeads = func() map[string]bool {
 }()
 
 // recursiveCopiers can copy whole directory trees.
-var recursiveCopiers = set("tar", "zip", "7z", "7za", "cp", "rsync", "scp")
+var recursiveCopiers = set("tar", "zip", "7z", "7za", "cp", "rsync", "scp", "diff")
 
 // cmdBase normalises a command name: basename, lower-case, no Windows
 // executable extension.

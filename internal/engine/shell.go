@@ -786,6 +786,7 @@ type stdinInfo struct {
 	kind   stdinKind
 	texts  []string // static texts, or globs (internal syntax) for stdinGlob
 	decode bool     // produced by a decoding pipeline
+	path   string   // stdinFile: the redirected file, for reasons
 }
 
 func (s *shellEval) stmtStdin(st *syntax.Stmt) *stdinInfo {
@@ -799,7 +800,7 @@ func (s *shellEval) stmtStdin(st *syntax.Stmt) *stdinInfo {
 		case syntax.WordHdoc:
 			return s.staticInfo(s.wordAlts(r.Word, modeRaw))
 		case syntax.RdrIn:
-			return &stdinInfo{kind: stdinFile}
+			return &stdinInfo{kind: stdinFile, path: plain(firstAlt(s.wordAlts(r.Word, modeRaw)))}
 		}
 	}
 	return s.stdin[st]

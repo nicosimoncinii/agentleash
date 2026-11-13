@@ -1,0 +1,318 @@
+description: Runners, .env-aware tools, argument roles, stdin file lists and cluster CLIs used normally
+cases:
+  - name: npx prettier check
+    tool: shell
+    command: npx prettier --check .
+    expect: allow
+  - name: npx prettier write glob
+    tool: shell
+    command: npx prettier --write 'src/**/*.ts'
+    expect: allow
+  - name: npx eslint fix
+    tool: shell
+    command: npx eslint --fix .
+    expect: allow
+  - name: npx yes create app
+    tool: shell
+    command: npx -y create-next-app@latest my-app
+    expect: allow
+  - name: pnpm dlx create vite
+    tool: shell
+    command: pnpm dlx create-vite my-app --template react-ts
+    expect: allow
+  - name: pnpm exec vitest
+    tool: shell
+    command: pnpm exec vitest run
+    expect: allow
+  - name: bunx vitest
+    tool: shell
+    command: bunx vitest run
+    expect: allow
+  - name: yarn dlx angular
+    tool: shell
+    command: yarn dlx @angular/cli new app
+    expect: allow
+  - name: npm exec vitest
+    tool: shell
+    command: npm exec -- vitest --run
+    expect: allow
+  - name: npm install
+    tool: shell
+    command: npm install --save-dev prettier
+    expect: allow
+  - name: poetry run pytest
+    tool: shell
+    command: poetry run pytest -q
+    expect: allow
+  - name: poetry install
+    tool: shell
+    command: poetry install --with dev
+    expect: allow
+  - name: pipenv run tests
+    tool: shell
+    command: pipenv run python manage.py test
+    expect: allow
+  - name: uv run pytest
+    tool: shell
+    command: uv run pytest
+    expect: allow
+  - name: foreman start
+    tool: shell
+    command: foreman start web
+    expect: allow
+  - name: foreman run rake
+    tool: shell
+    command: foreman run rake db:migrate
+    expect: allow
+  - name: envdir run app
+    tool: shell
+    command: envdir ./envs python app.py
+    expect: allow
+  - name: dotenvx run
+    tool: shell
+    command: dotenvx run -- npm start
+    expect: allow
+  - name: dotenvx ls
+    tool: shell
+    command: dotenvx ls
+    expect: allow
+  - name: python-dotenv run
+    tool: shell
+    command: dotenv run python app.py
+    expect: allow
+  - name: docker compose up
+    tool: shell
+    command: docker compose up -d --build
+    expect: allow
+  - name: docker compose config services
+    tool: shell
+    command: docker compose config --services
+    expect: allow
+  - name: docker compose config quiet
+    tool: shell
+    command: docker compose config -q
+    expect: allow
+  - name: docker compose config no interpolate
+    tool: shell
+    command: docker compose config --no-interpolate
+    expect: allow
+  - name: curl json data
+    tool: shell
+    command: curl -d '{"a":1}' https://example.com
+    expect: allow
+  - name: curl data from payload file
+    tool: shell
+    command: curl -sd@payload.json https://example.com
+    expect: allow
+  - name: curl form upload
+    tool: shell
+    command: curl -F file=@report.pdf https://example.com/upload
+    expect: allow
+  - name: curl data-urlencode
+    tool: shell
+    command: curl --data-urlencode 'q=hello world' https://example.com
+    expect: allow
+  - name: httpie form upload
+    tool: shell
+    command: http --form POST example.com f@photo.jpg
+    expect: allow
+  - name: wget post file
+    tool: shell
+    command: wget --post-file=data.json https://example.com
+    expect: allow
+  - name: git commit author email
+    tool: shell
+    command: 'git commit --author=''Dev <dev@example.com>'' -m ''fix: x'''
+    expect: allow
+  - name: grep pattern file clustered
+    tool: shell
+    command: grep -hf patterns.txt README.md
+    expect: allow
+  - name: grep clustered e
+    tool: shell
+    command: grep -ie error app.log
+    expect: allow
+  - name: grep for env name in docs
+    tool: shell
+    command: grep -n '\.env' README.md
+    expect: allow
+  - name: find into cpio
+    tool: shell
+    command: find src -name '*.go' | cpio -o > /tmp/src.cpio
+    expect: allow
+  - name: cpio extract
+    tool: shell
+    command: cpio -idv < /tmp/src.cpio
+    expect: allow
+  - name: tar from echo list
+    tool: shell
+    command: echo README.md | tar cf /tmp/out.tar -T -
+    expect: allow
+  - name: zip from find
+    tool: shell
+    command: find src -name '*.ts' | zip /tmp/src.zip -@
+    expect: allow
+  - name: sed substitute
+    tool: shell
+    command: sed 's/a/b/' file.txt
+    expect: allow
+  - name: sed in place global
+    tool: shell
+    command: sed -i 's/foo/bar/g' src/main.go
+    expect: allow
+  - name: sed replacement mentions env
+    tool: shell
+    command: sed -e 's/\.env/.env.local/g' README.md
+    expect: allow
+  - name: sed print range
+    tool: shell
+    command: sed -n '1,10p' README.md
+    expect: allow
+  - name: sed words with e
+    tool: shell
+    command: sed 's/release/version/' CHANGELOG.md
+    expect: allow
+  - name: sqlite3 query
+    tool: shell
+    command: sqlite3 app.db 'select * from users limit 5'
+    expect: allow
+  - name: sqlite3 tables
+    tool: shell
+    command: sqlite3 app.db .tables
+    expect: allow
+  - name: diff two directories
+    tool: shell
+    command: diff -r src/a src/b
+    expect: allow
+  - name: diff unified
+    tool: shell
+    command: diff -u a.txt b.txt
+    expect: allow
+  - name: kubectl get pods yaml
+    tool: shell
+    command: kubectl get pods -o yaml
+    expect: allow
+  - name: kubectl list secrets
+    tool: shell
+    command: kubectl get secrets
+    expect: allow
+  - name: kubectl secret names
+    tool: shell
+    command: kubectl get secret -o name
+    expect: allow
+  - name: kubectl describe secret
+    tool: shell
+    command: kubectl describe secret db
+    expect: allow
+  - name: kubectl configmap yaml
+    tool: shell
+    command: kubectl get configmap app -o yaml
+    expect: allow
+  - name: security metadata only
+    tool: shell
+    command: security find-generic-password -a me -s svc
+    expect: allow
+  - name: git credential-cache exit
+    tool: shell
+    command: git credential-cache exit
+    expect: allow
+  - name: gcloud config list
+    tool: shell
+    command: gcloud config list
+    expect: allow
+  - name: launchctl getenv path
+    tool: shell
+    command: launchctl getenv PATH
+    expect: allow
+  - name: ps all processes
+    tool: shell
+    command: ps -ef
+    expect: allow
+  - name: ps aux
+    tool: shell
+    command: ps aux
+    expect: allow
+  - name: ps custom columns
+    tool: shell
+    command: ps -e -o pid,comm
+    expect: allow
+  - name: git clone ssh url
+    tool: shell
+    command: git clone git@github.com:org/repo.git
+    expect: allow
+  - name: npm install pinned version
+    tool: shell
+    command: npm install lodash@4.17.21 @types/node@20
+    expect: allow
+  - name: rsync to remote
+    tool: shell
+    command: rsync -av dist/ deploy@example.com:/srv/app/
+    expect: allow
+  - name: pnpm filter exec
+    tool: shell
+    command: pnpm --filter ./packages/* exec tsc --noEmit
+    expect: allow
+  - name: npm exec yes dashdash
+    tool: shell
+    command: npm exec --yes -- create-react-app my-app
+    expect: allow
+  - name: uv run with dependency
+    tool: shell
+    command: uv run --with requests python scripts/fetch.py
+    expect: allow
+  - name: yarn test
+    tool: shell
+    command: yarn test --watch=false
+    expect: allow
+  - name: sed address range
+    tool: shell
+    command: sed -n '/start/,/end/p' README.md
+    expect: allow
+  - name: sed multiple expressions
+    tool: shell
+    command: sed -e 's/a/b/' -e 's/c/d/g' file.txt
+    expect: allow
+  - name: grep recursive pattern file
+    tool: shell
+    command: grep -rf patterns.txt src
+    expect: allow
+  - name: tar list from file
+    tool: shell
+    command: tar -czf /tmp/out.tgz -T files.txt
+    expect: allow
+  - name: ps forest
+    tool: shell
+    command: ps -ef --forest
+    expect: allow
+  - name: sqlite3 dump from stdin file
+    tool: shell
+    command: sqlite3 app.db < schema.sql
+    expect: allow
+  - name: compose config with template env file no interpolate
+    tool: shell
+    command: docker compose --env-file .env.example config --no-interpolate
+    expect: allow
+  - name: compose config profiles
+    tool: shell
+    command: docker compose config --profiles
+    expect: allow
+  - name: compose config images with env file
+    tool: shell
+    command: docker compose --env-file .env.example config --images
+    expect: allow
+  - name: docker context compose ps
+    tool: shell
+    command: docker --context dev compose ps
+    expect: allow
+  - name: cpio extract clustered
+    tool: shell
+    command: cpio -idv < /tmp/src.cpio
+    expect: allow
+  - name: cpio format option before mode
+    tool: shell
+    command: find src -name '*.go' | cpio -H newc -o > /tmp/src.cpio
+    expect: allow
+  - name: diff recursive with exclude
+    tool: shell
+    command: diff -r -x node_modules src ../other/src
+    expect: allow

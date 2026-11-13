@@ -287,7 +287,9 @@ globs.
 
 **Literal secret paths** are denied for every command except:
 - data arguments: `echo`/`printf`/`:`, the pattern of `grep`/`rg`/`ag` (unless given with
-  `-f FILE`), the script of `sed` (only its `r`/`w` file names and `e` commands are checked),
+  `-f FILE`, also clustered as `-hf FILE`), the script of `sed` (only its `r`/`w` file names,
+  `e` commands and the commands run by the `s///e` flag are checked; an `s///e` replacement
+  built from the input, `&` or ``, is `dynamic-shell`),
   the program of `awk` and the filter of `jq`/`yq` (scanned as code), and `--option=value`
   values unless the option takes a path (`--env-file=`, `--file=`, ...) or the value contains
   `/` (`git log --grep=.env` is fine);
@@ -334,11 +336,19 @@ substitution, here-docs/strings, `if/for/while/case`, functions, redirections (`
 `eval`, `xargs` (with the producer's output: static `echo`, `find -name`, `git ls-files`),
 `find -exec`, `env` (incl. `-S`), `sudo`, `doas`, `nohup`, `time`, `nice`, `timeout`,
 `command`, `builtin`, `exec`, `watch`, `su -c`, `script -c`, `flock`, `stdbuf`, `strace`,
-`busybox`, `pwsh -c`, `cmd /c`, `at`/`crontab -`, piping static text into a shell.
+`busybox`, `pwsh -c`, `cmd /c`, `at`/`crontab -`, piping static text into a shell, and
+package/project runners: `npx`/`pnpx`/`bunx`/`uvx`, `npm exec|x`, `pnpm dlx|exec`,
+`yarn dlx|exec`, `bun x`, `poetry`/`pipenv`/`pdm`/`hatch`/`uv`/`pipx`/`conda`/`foreman`/`honcho
+run`, `envdir DIR` (their `-c`/`--call` strings are re-parsed; `npx prettier .` is analysed as
+`prettier .`). File lists read from stdin (`cpio -o|-p`, `tar -T -`/`--files-from=-`,
+`zip -@`/`--names-stdin`) are checked like `xargs` input: the producer's static words or
+`find`/`git ls-files` globs are paths; a list from any other source (a redirected file, an
+unknown producer) is opaque and denied (`dynamic-path`).
 
 **Conservative rule:** any argument of any command that resolves to a secret path is denied.
-Arguments are also split on `=`, `:`, `,`, `@` and attached short options, so `if=.env`,
-`HEAD:.env`, `-d @.env` and `--env-file=.env` are caught; arguments containing a shell command
+Arguments are also split on `=`, `:`, `,`, `@` (leading, as in `-d @.env`, or mid-word, as
+in `name@.env`) and attached short options, repeatedly, so `if=.env`, `HEAD:.env`,
+`-sd@.env`, `f@.env` and `--env-file=.env` are caught; arguments containing a shell command
 (`git config alias.x '!cat .env'`, `ssh host 'cat .env'`) are re-parsed.
 
 Words are evaluated statically: quoting, `$'…'` escapes, extglobs, brace expansion (which,
@@ -362,8 +372,11 @@ path-checked.
 `aws configure get|export-credentials`, `aws ecr get-login-password`, `git credential
 fill|get`, `git config --get credential.*`, `gcloud auth print-access-token|print-identity-token`,
 `az account get-access-token`, `docker-credential-* get`, `npm token list`, `op read`,
-`op item get`, `security find-generic-password -w`, `vault read|kv get`, `heroku auth:token`,
-`doctl auth token`. They print stored credentials without any secret path on the command
+`op item get`, `security find-generic-password|find-internet-password -w|-g` (also clustered,
+`-wa`), `vault read|kv get`, `heroku auth:token`, `doctl auth token`,
+`git credential-cache|credential-osxkeychain|credential-manager|... get`,
+`git-credential-* get`, `gcloud config config-helper`, `kubectl`/`oc get secret[s] -o
+yaml|json|jsonpath|go-template` (the table view, `-o name` and `-o wide` are fine). They print stored credentials without any secret path on the command
 line; the reason asks the agent to get the user involved.
 
 Anything only known at runtime becomes a wildcard:
@@ -385,8 +398,8 @@ accessors (`os.environ[...]`, `process.env.X`, `ENV[...]`, `$ENV{...}`, `ENVIRON
 primitives together are denied; strings passed to `system()`/`subprocess`/`exec` are
 re-parsed as shell.
 
-Recursive copies/archives (`tar c`, `zip -r`, `cp -r`, `rsync`, `scp -r`) of a directory
-containing the project root or home, and recursive `grep`/`rg --hidden` for a secret variable
+Recursive copies/archives (`tar c`, `zip -r`, `cp -r`, `rsync`, `scp -r`) and `diff -r`
+(without `-x`/`--exclude`) of a directory containing the project root or home, and recursive `grep`/`rg --hidden` for a secret variable
 name over such a directory, return **ask** (`secret-dir-copy`, `secret-search`).
 
 ### 7.3 Environment exposure
@@ -394,7 +407,8 @@ name over such a directory, return **ask** (`secret-dir-copy`, `secret-search`).
 Denied: `printenv`/`env`/`set`/`export`/`export -p`/`declare -x|-p`/`typeset` without names;
 `printenv NAME`, `declare -p NAME`, `$NAME`, `${NAME}`, `${#NAME}`, `${!ref}`, namerefs and
 arithmetic references where NAME matches a `secrets.env` glob (case-insensitive);
-`/proc/*/environ`; `ps e`; `systemctl show-environment`. `${NAME:+x}` (set-ness only) and
+`/proc/*/environ`; `ps e`, `ps -E`; `systemctl show-environment`; `launchctl getenv NAME`
+(like `printenv NAME`). `${NAME:+x}` (set-ness only) and
 `${!PREFIX*}` (names only) are allowed. PowerShell/cmd: `$env:NAME`, `${env:NAME}`,
 `env:` drive listings, `[Environment]::GetEnvironmentVariable(s)`, `%NAME%`, `!NAME!`, cmd `set`
 and `set PREFIX`.
@@ -481,11 +495,18 @@ the most specific one (named secret before generic dynamic rules).
   credentials` is not caught).
 - Interpreter scanning is heuristic (computed strings beyond simple concatenation, `getattr`,
   `'%senv' % '.'` formatting, reflection, compression, custom encodings).
-- Tools with their own command languages are partially covered: `sqlite3 '.read .env'`,
-  `make --eval`, `emacs --eval`, vim ex commands without a literal secret, `less` commands,
+- Tools with their own command languages are partially covered (`sqlite3` `readfile()`,
+  `.shell`/`.system`, `.read`/`.import` file names and `-cmd` are checked): `make --eval`, `emacs --eval`, vim ex commands without a literal secret, `less` commands,
   `ssh` remote commands.
 - Env forwarding is partially covered: `docker run -e NAME`, `dotenv`/`direnv exec`/`op run`/
-  `doppler run` are handled; `envsubst` over secret names, namerefs to variables assigned later
+  `doppler run` are handled. CLIs that load `./.env` implicitly and print it are denied as a
+  read of that file (`dotenv list|get`, `python -m dotenv`, `dotenvx get|keypair|decrypt
+  --stdout`, `dotenv-cli -p NAME`, `docker compose config|convert` unless `-q`,
+  `--services`/`--volumes`/`--profiles`/`--images` or `--no-interpolate`; with `--env-file` the
+  given files replace `.env` and only a secret one is denied; otherwise, when `secrets.env` has
+  globs, it is **ask** (`env-exposure`), because it also interpolates referenced variables from
+  the process environment); runners that only load it into the
+  environment (`pipenv run`, `foreman run`) are unwrapped instead; `envsubst` over secret names, namerefs to variables assigned later
   in the script (`declare -n r=f; f=.env; cat $r`) are not.
 - PowerShell is tokenized, not parsed (see §7.4): `-f` format strings, method chains and
   splatting are not resolved; recursive `Select-String` for a secret name is not flagged.

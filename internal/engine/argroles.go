@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -58,6 +59,8 @@ func dataFiltered(name string, args []cmdArg) []cmdArg {
 	for _, a := range args {
 		if t, ok := a.text(); ok && (dataValueOpts[t] || fileValueOpts[t] || strings.HasPrefix(t, "--regexp=") || strings.HasPrefix(t, "--expression=")) {
 			explicit = true
+		} else if l, _ := clusterValueOpt(name, t); ok && l != 0 {
+			explicit = true
 		}
 	}
 	out := make([]cmdArg, 0, len(args))
@@ -65,6 +68,21 @@ func dataFiltered(name string, args []cmdArg) []cmdArg {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		t, ok := a.text()
+		if l, attached := clusterValueOpt(name, t); ok && l != 0 {
+			// -hf FILE, -ie PATTERN, -hfFILE: the cluster ends with (or
+			// carries) the value of -f (a file) or -e (data).
+			out = append(out, a)
+			switch {
+			case attached != "" && l == 'f':
+				out = append(out, litArg(attached))
+			case attached == "" && i+1 < len(args):
+				if l == 'f' {
+					out = append(out, args[i+1])
+				}
+				i++
+			}
+			continue
+		}
 		switch {
 		case ok && dataValueOpts[t]:
 			out = append(out, a)
@@ -92,6 +110,215 @@ func dataFiltered(name string, args []cmdArg) []cmdArg {
 		}
 	}
 	return out
+}
+
+// clusterFileOpt are the tools whose short -f takes a pattern/script file
+// (ag/ack use -f for something else).
+var clusterFileOpt = set("grep", "egrep", "fgrep", "rg", "sed", "awk", "gawk", "mawk", "nawk", "jq", "yq")
+
+// clusterValueOpt finds -e or -f inside a short-option cluster of two or
+// more letters ("-hf", "-ie", "-hfFILE"). It returns the letter and the value
+// attached after it ("" when the value is the next argument), or 0.
+func clusterValueOpt(name, t string) (byte, string) {
+	if !clusterFileOpt[name] || len(t) < 3 || t[0] != '-' || t[1] == '-' {
+		return 0, ""
+	}
+	for i := 1; i < len(t); i++ {
+		c := t[i]
+		if !isAlpha(c) {
+			return 0, ""
+		}
+		if c == 'e' || c == 'f' {
+			if i == 1 && len(t) > 2 {
+				return 0, "" // -fFILE / -ePATTERN: handled by the attached-value rule
+			}
+			return c, t[i+1:]
+		}
+	}
+	return 0, ""
+}
+
+// sedScripts returns the script texts of a sed command line: -e/--expression
+// values, or the first operand when none is given (-f files are path-checked
+// as arguments).
+func sedScripts(args []cmdArg) []string {
+	var scripts []string
+	explicit := false // -e or -f given: operands are input files
+	first := ""
+	for i := 0; i < len(args); i++ {
+		t, ok := args[i].text()
+		if !ok {
+			continue
+		}
+		l, attached := clusterValueOpt("sed", t)
+		switch {
+		case t == "-e" || t == "--expression" || (l == 'e' && attached == ""):
+			explicit = true
+			if i+1 < len(args) {
+				scripts = append(scripts, args[i+1].textOr())
+				i++
+			}
+		case l == 'e':
+			explicit = true
+			scripts = append(scripts, attached)
+		case strings.HasPrefix(t, "--expression="):
+			explicit = true
+			scripts = append(scripts, strings.TrimPrefix(t, "--expression="))
+		case strings.HasPrefix(t, "-e") && len(t) > 2:
+			explicit = true
+			scripts = append(scripts, t[2:])
+		case t == "-f" || t == "--file" || (l == 'f' && attached == ""):
+			explicit = true
+			i++
+		case t == "-l" || t == "--line-length":
+			i++
+		case strings.HasPrefix(t, "-") && t != "-":
+			explicit = explicit || strings.HasPrefix(t, "-f") || strings.HasPrefix(t, "--file=") || l == 'f'
+		case first == "":
+			first = t
+		}
+	}
+	if !explicit && first != "" {
+		scripts = append(scripts, first)
+	}
+	return scripts
+}
+
+// sedExecTexts finds `s/regex/replacement/FLAGS` commands with the GNU `e`
+// flag, which runs the pattern space as a shell command after the
+// substitution. It returns the replacements and whether one of them is built
+// from the input (& or \N), i.e. only known at runtime.
+func sedExecTexts(script string) (texts []string, dynamic bool) {
+	for i := 0; i+1 < len(script); i++ {
+		if script[i] != 's' || (i > 0 && !strings.ContainsRune(";{}\n \t0123456789$/!,", rune(script[i-1]))) {
+			continue
+		}
+		d := script[i+1]
+		if isAlpha(d) || (d >= '0' && d <= '9') || d == '\\' || d == '\n' || d == ' ' {
+			continue
+		}
+		var parts []string
+		j := i + 2
+		start := j
+		for j < len(script) && len(parts) < 2 {
+			switch script[j] {
+			case '\\':
+				j++
+			case d:
+				parts = append(parts, script[start:j])
+				start = j + 1
+			}
+			j++
+		}
+		if len(parts) < 2 {
+			return texts, dynamic
+		}
+		exec := false
+		for ; j < len(script) && strings.IndexByte("gpiImMe0123456789", script[j]) >= 0; j++ {
+			exec = exec || script[j] == 'e'
+		}
+		if exec {
+			repl := strings.ReplaceAll(parts[1], `\`+string(d), string(d))
+			texts = append(texts, repl)
+			if strings.Contains(repl, "&") || sedBackrefRe.MatchString(repl) {
+				dynamic = true
+			}
+		}
+		i = j - 1
+	}
+	return texts, dynamic
+}
+
+var sedBackrefRe = regexp.MustCompile(`\\[0-9]`)
+
+// sedSubstExec re-parses the commands run by the s///e flag.
+func (s *shellEval) sedSubstExec(args []cmdArg) {
+	for _, script := range sedScripts(args) {
+		texts, dynamic := sedExecTexts(script)
+		if dynamic {
+			s.c.deny(RuleDynamicShell, "the sed `s///e` flag runs a command built from the input text (& or \\1), which is only known at runtime; blocked to be safe.")
+		}
+		for _, t := range texts {
+			ch := s.child()
+			ch.ignoreParseErrors = true
+			ch.run(t)
+		}
+	}
+}
+
+var (
+	sqliteValueOpts = set("-separator", "-newline", "-nullvalue", "-vfs", "-maxsize", "-mmap", "-pagecache",
+		"-lookaside", "-heap", "-init", "-escape")
+	sqliteReadFileRe = regexp.MustCompile(`(?i)\breadfile\s*\(\s*(?:'([^']*)'\s*\)|"([^"]*)"\s*\))?`)
+	sqliteFileDots   = set(".read", ".import", ".open", ".restore", ".load", ".backup", ".save", ".output", ".once", ".clone")
+)
+
+// sqliteCommand analyses what sqlite3 runs besides the database file: SQL
+// and dot-commands given as operands, with -cmd, or on static stdin.
+// readfile('PATH') and .read/.import/... file names are path-checked,
+// .shell/.system and '|cmd' file names are re-parsed as shell commands.
+func (s *shellEval) sqliteCommand(args []cmdArg, stdin *stdinInfo) {
+	var texts []string
+	dbSeen := false
+	for i := 0; i < len(args); i++ {
+		t := args[i].textOr()
+		switch {
+		case t == "-cmd" || t == "--cmd":
+			if i+1 < len(args) {
+				texts = append(texts, args[i+1].textOr())
+				i++
+			}
+		case sqliteValueOpts[strings.TrimPrefix(t, "-")] || sqliteValueOpts[t]:
+			i++
+		case strings.HasPrefix(t, "-"):
+		case !dbSeen:
+			dbSeen = true
+		default:
+			texts = append(texts, t)
+		}
+	}
+	if stdin != nil && stdin.kind == stdinStatic {
+		texts = append(texts, stdin.texts...)
+	}
+	for _, text := range texts {
+		s.sqliteText(text)
+	}
+}
+
+func (s *shellEval) sqliteText(text string) {
+	for _, m := range sqliteReadFileRe.FindAllStringSubmatch(text, -1) {
+		p := m[1] + m[2]
+		if p == "" {
+			s.c.deny(RuleDynamicPath, "sqlite3 readfile() of a value only known at runtime could read a secret file; pass a literal, non-secret path.")
+			continue
+		}
+		s.checkArg("sqlite3", litArg(p))
+	}
+	for _, line := range strings.Split(text, "\n") {
+		f := strings.Fields(strings.TrimSpace(line))
+		if len(f) == 0 || !strings.HasPrefix(f[0], ".") {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimSpace(line)[len(f[0]):])
+		switch {
+		case f[0] == ".shell" || f[0] == ".system":
+			ch := s.child()
+			ch.ignoreParseErrors = true
+			ch.run(rest)
+		case sqliteFileDots[f[0]] && len(f) > 1:
+			if arg := strings.Trim(rest, `'"`); strings.HasPrefix(arg, "|") {
+				// .read '|cmd', .output '|cmd': the command is run by a shell
+				s.recurseText(arg[1:], false)
+				continue
+			}
+			for _, a := range f[1:] {
+				if a = strings.Trim(a, `'"`); !strings.HasPrefix(a, "-") {
+					s.checkArg("sqlite3", litArg(a))
+					break
+				}
+			}
+		}
+	}
 }
 
 var copyCmds = set("cp", "mv", "install")
