@@ -407,7 +407,9 @@ func TestCommandPatterns(t *testing.T) {
 		{"/bin/rm -rf /", Deny, "command-deny"},
 		{"sh -c 'rm -rf /'", Deny, "command-deny"},
 		{"echo hi && rm -rf /", Deny, "command-deny"},
-		{"rm -rf /*", Deny, `command-deny:rm -rf /\*`},
+		// /* matches every top-level entry: it is canonicalised to / (the
+		// first deny pattern in the list wins the rule).
+		{"rm -rf /*", Deny, "command-deny:rm -rf /"},
 		{"rm -rf ~/*", Deny, "command-deny"},
 		{"rm -rf /tmp/build", Allow, ""},
 		{"rm -rf ./build/*", Allow, ""},

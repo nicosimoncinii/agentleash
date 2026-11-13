@@ -107,6 +107,11 @@ what must be blocked and common harmless names that must stay allowed.
   wrappers such as `sudo`, `env`, `nohup` and `timeout` are stripped.
 - A pattern containing ` | ` is matched against a pipeline, stage by stage, with each stage
   glob-matched. All other patterns are matched against each simple command.
+- Commands are also matched in canonical forms (§7.5): an argument naming the filesystem
+  root, the home directory or an ancestor of the home is spelled `/` or `~` however it is
+  written (`/*`, `~/*`, `~/..`, `../../..`, `cd / && rm -rf *`), so `rm -rf /` and `rm -rf ~`
+  cover those spellings. A stage that runs code from stdin (`sudo -s`, `sh /dev/stdin`,
+  `pwsh`, `python3` without a program) also matches `sh` and `bash`.
 - `Validate` only checks that command patterns are non-empty and have no leading or trailing
   whitespace.
 - Because `*` is this broad, keep patterns specific. For example, `rm -rf /*` would also
@@ -485,17 +490,55 @@ simple command at every wrapper level (so `sudo`, `env X=1`, `timeout 5`, `sh -c
 clusters are merged and sorted (`rm -r -f /` = `rm -fr /`), `--` is dropped and paths are
 cleaned (`//` → `/`). In that form the home directory (`~`, `~/`, `$HOME`, `"$HOME"`, the
 literal `Request.Home`) is spelled `~` and a Windows drive root (`C:\`) is spelled `/`. For
-`rm`, `-R`/`--recursive` → `-r`, `--force` → `-f`, and options that do not change the target
-(`--no-preserve-root`, `-v`, `-d`, `-I`, ...) are dropped, so `rm --recursive --force
---no-preserve-root /` matches `rm -rf /`. PowerShell `Remove-Item`/`ri`/`rm`/`rd`
-(`-Recurse`, `-Force`, `-Path`, cmd `/s /q`) is also matched as the equivalent `rm -rf PATH`.
+`rm`, `-R`/`--recursive` → `-r`, `--force` → `-f` (also as unambiguous GNU abbreviations:
+`--rec`, `--f`, `--for`), options that do not change the target (`--no-preserve-root`, `-v`,
+`-d`, `-I`, ...) are dropped and empty operands removed, so `rm --rec --for --no-pres /`
+matches `rm -rf /`. A multi-operand `rm` is also matched once per operand (`rm -rf ./build /`
+and the brace expansions `rm -rf /{,}`, `rm -rf {/,}` match `rm -rf /`). PowerShell
+`Remove-Item`/`ri`/`rm`/`rd` (`-Recurse`, `-Force`, `-Path`, cmd `/s /q`) is also matched as
+the equivalent `rm -rf PATH`.
+
+**Root and home targets.** In an extra form, every non-option argument that names the
+filesystem root or a drive root is spelled `/`, and one that names the home directory or one
+of its ancestors (deleting it deletes the home) is spelled `~`. Before that check, trailing
+segments that are globs matching every entry (`*`, `**`, `?*`) are dropped (`/*`, `/*/`,
+`~/*`, `C:\*`, Git Bash `/c/*`); `~`, `$HOME`, `~user` of the same user and Git Bash/WSL
+spellings of a Windows home (`/c/Users/u`) are the home; `~/..` and `"$HOME"/..` are resolved
+against the home (`path.Clean("~/..")` is not `.`); and a relative path (`..`, `*`, `.`) is
+resolved against every possible working directory: `Request.Cwd`, the project root and the
+`cd`/`pushd` targets in the same script, including a bare `cd` (home). The `cd` tracking is
+flow-insensitive, like the rest of §7.2 (`cd / && ls; rm -rf *` is also denied). Other paths
+are not rewritten, so `rm -rf ./build`, `rm -rf node_modules/*` and `cd /tmp && rm -rf *`
+stay allowed and broad user patterns such as `rm -rf /*` keep their meaning.
+
+**dd.** Operands are order-free: an extra form puts `if=` first (`if=/dev/stdin` when
+absent) and `of=` last, so `dd * of=/dev/*` matches `dd of=/dev/sda if=/dev/zero` and
+`… | dd of=/dev/sda`.
+
 Fork bombs (a function that calls itself in a pipeline or in the background, e.g.
 `:(){ :|:& };:`) are recognised structurally and always denied, because no simple command
 is left to match after parsing. For `git`, global options (`-C dir`, `-c k=v`, `--git-dir=…`) are
-removed and `git push -f …`/`git push origin +main` are also matched as
-`git push --force …`. Command names are lower-cased basenames (`/bin/RM` → `rm`; PowerShell
-aliases are matched both as typed and resolved). If a match depends on a runtime value
-(`rm -rf $DIR` vs `rm -rf /`) the decision is downgraded from deny to **ask**.
+removed; aliases are expanded when defined inline (`git -c alias.p='push -f' p`) or by
+`git config [--global] alias.p 'push -f'` anywhere in the same script, including chains of
+aliases. A shell alias (`alias.p='!git push -f origin main'`) is analysed at the call site
+like `sh -c`, with the call's arguments appended as git does (`git p --force` runs
+`git push --force`), so every rule applies to it (patterns, secret paths, env exposure).
+Expansion is bounded (8 values per alias name, 64 names, 32 expansions per call, every
+expansion charged to the work budget, §7.8); exceeding a bound is `too-complex`. `git push -f …`, `git push origin +main`, `git push --mirror`,
+abbreviations of `--force`/`--mirror` (`--mirr`) and `git send-pack --force` are also matched
+as `git push --force …`; an abbreviated `--hard` (`git reset --ha`) is matched as `--hard`.
+Command names are lower-cased basenames (`/bin/RM` → `rm`; PowerShell aliases are matched
+both as typed and resolved). If a match depends on a runtime value (`rm -rf $DIR` vs
+`rm -rf /`) the decision is downgraded from deny to **ask**.
+
+**Remote code patterns.** In a `|` pattern, a stage that runs code read from stdin is also
+matched as `sh` and `bash`: a shell without a script or with `-s`, `-`, `/dev/stdin`;
+`sudo -s`/`-i`/`--login`, `doas -s`, `su` without `-c`; `pwsh`/`powershell` without a script or
+with `-Command -`; an interpreter (`python3`, `node`, …) without a program. Two shapes without
+a `|` are matched as the equivalent pipeline: a process substitution used as the script
+(`python3 <(curl …)` = `curl … | python3`) and a file downloaded and run in the same script
+(`curl -o f URL && sh f`, `wget URL; bash ./i.sh`, `./f`) = `curl … | sh`. So
+`curl * | sh` covers all of them. Not covered: a download in an earlier call (§7.7).
 
 ### 7.6 Rule identifiers
 
@@ -511,7 +554,12 @@ the most specific one (named secret before generic dynamic rules).
 
 - Write-then-execute: a script written with the Write tool (or `cat > x.sh <<EOF`) and run
   later is only checked by its path, not its content; the same holds for `make`, `npm run`,
-  `python script.py`, Makefiles and other files read by tools.
+  `python script.py`, Makefiles and other files read by tools. (A `curl`/`wget` download run
+  in the *same* command is matched as `curl … | sh`, §7.5.)
+- Command patterns only see one call: a git alias configured in an earlier call
+  (`git config --global alias.p 'push -f'`, then `git p` later) or through
+  `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n` is not expanded, and a `cd` made in an earlier call is
+  only known through `Request.Cwd`.
 - Plain recursive reads of a directory: `grep -r foo .` reads `.env` and prints lines that
   match `foo`; only searches for a secret variable *name* are flagged. `docker build .` sends
   `.env` to the daemon unless `.dockerignore` excludes it.
@@ -553,7 +601,8 @@ subshells, `sh -c`, `eval` and PowerShell sub-expressions. Word evaluations and 
 producers are memoised, so nested substitutions are linear. Hard caps: 256 KB of command
 text, 24 nested substitutions, 256 pipeline stages, 60 000 syntax nodes, 32 possible working
 directories (beyond that, relative paths match anywhere), 64 alternatives per word, 8 levels
-of nested shells. Exceeding any limit returns **deny** (`too-complex`): "too complex to analyse
+of nested shells, git aliases (8 values per name, 64 names, 32 expansions per call; each
+expansion and each generated command form is charged to the work budget). Exceeding any limit returns **deny** (`too-complex`): "too complex to analyse
 safely". Inputs up to 64 KB are answered in well under 100 ms.
 
 ## 8. Testing strategy

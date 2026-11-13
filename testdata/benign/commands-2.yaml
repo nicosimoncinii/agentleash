@@ -1,0 +1,137 @@
+description: Everyday commands close to the dangerous-command spellings in attacks/dangerous-commands-2.yaml
+cases:
+  - name: rm build dir
+    tool: shell
+    command: rm -rf ./build
+    expect: allow
+  - name: rm node_modules contents
+    tool: shell
+    command: rm -rf node_modules/*
+    expect: allow
+  - name: rm dist glob
+    tool: shell
+    command: rm -rf dist/* coverage
+    expect: allow
+  - name: rm tmp glob
+    tool: shell
+    command: rm -rf /tmp/build-*
+    expect: allow
+  - name: rm tmp dir contents
+    tool: shell
+    command: rm -rf /tmp/agentleash-test/*
+    expect: allow
+  - name: rm home cache subdir
+    tool: shell
+    command: rm -rf ~/.cache/go-build/*
+    expect: allow
+  - name: rm brace subdirs
+    tool: shell
+    command: rm -rf {build,dist}
+    expect: allow
+  - name: rm abbreviated verbose
+    tool: shell
+    command: rm -r --verb ./out
+    expect: allow
+  - name: rm parent sibling dir
+    tool: shell
+    cwd: src
+    command: rm -rf ../tmp
+    expect: allow
+  - name: rm star in project
+    tool: shell
+    cwd: src
+    command: rm -rf *
+    expect: allow
+    note: The working directory is a project subdirectory.
+  - name: cd tmp then rm star
+    tool: shell
+    command: cd /tmp/scratch && rm -rf *
+    expect: allow
+  - name: cd root then ls
+    tool: shell
+    command: cd / && ls
+    expect: allow
+  - name: cd tmp then ls
+    tool: shell
+    command: cd /tmp && ls
+    expect: allow
+  - name: cd home then ls
+    tool: shell
+    command: cd && ls -la
+    expect: allow
+  - name: ls root glob
+    tool: shell
+    command: ls -d /*
+    expect: allow
+  - name: dd image copy
+    tool: shell
+    command: dd if=a.img of=b.img bs=1M
+    expect: allow
+  - name: dd of file before if
+    tool: shell
+    command: dd of=out.bin if=/dev/zero bs=1k count=1
+    expect: allow
+  - name: git push main
+    tool: shell
+    command: git push origin main
+    expect: allow
+  - name: git push follow-tags
+    tool: shell
+    command: git push --follow-tags origin main
+    expect: allow
+  - name: git push tags
+    tool: shell
+    command: git push --tags
+    expect: allow
+  - name: git reset soft
+    tool: shell
+    command: git reset --soft HEAD~1
+    expect: allow
+  - name: git reset mixed abbreviated
+    tool: shell
+    command: git reset --mix HEAD~1
+    expect: allow
+  - name: git config alias checkout
+    tool: shell
+    command: git config alias.co checkout
+    expect: allow
+  - name: git config alias then use
+    tool: shell
+    command: git config alias.st status && git st
+    expect: allow
+  - name: git config shell alias status
+    tool: shell
+    command: git config alias.st '!git status -sb' && git st
+    expect: allow
+  - name: git inline shell alias log
+    tool: shell
+    command: git -c alias.l='!git log --oneline' l -5
+    expect: allow
+  - name: git -c alias push upstream
+    tool: shell
+    command: git -c alias.pu='push -u' pu origin feat/x
+    expect: allow
+  - name: git send-pack plain
+    tool: shell
+    command: git send-pack origin main
+    expect: allow
+  - name: curl download only
+    tool: shell
+    command: curl -o /tmp/data.json https://example.invalid/data.json
+    expect: allow
+  - name: curl download then inspect
+    tool: shell
+    command: curl -o i.sh https://example.invalid/i.sh && cat i.sh
+    expect: allow
+  - name: curl pipe jq
+    tool: shell
+    command: curl -s https://example.invalid/api | jq .name
+    expect: allow
+  - name: run local script
+    tool: shell
+    command: sh ./scripts/build.sh
+    expect: allow
+  - name: python process substitution of local file
+    tool: shell
+    command: python3 <(cat scripts/gen.py)
+    expect: allow

@@ -27,6 +27,8 @@ type shellEval struct {
 	memo      map[wordKey][]string
 	prodMemo  map[*syntax.Stmt]*stdinInfo
 	globstar  bool
+	// gitAliases are git aliases defined in the script (commands.go).
+	gitAliases *gitAliasSet
 }
 
 func newShellEval(e *Engine, sec *secretSet, c *collector, depth int) *shellEval {
@@ -38,6 +40,8 @@ func newShellEval(e *Engine, sec *secretSet, c *collector, depth int) *shellEval
 		pipeSeen:  map[*syntax.BinaryCmd]bool{},
 		memo:      map[wordKey][]string{},
 		prodMemo:  map[*syntax.Stmt]*stdinInfo{},
+
+		gitAliases: newGitAliasSet(),
 	}
 }
 
@@ -62,6 +66,7 @@ func (s *shellEval) child() *shellEval {
 	ch := newShellEval(s.e, s.sec, s.c, s.depth+1)
 	ch.req = s.req
 	ch.vars = s.vars
+	ch.gitAliases = s.gitAliases
 	return ch
 }
 
@@ -92,8 +97,10 @@ func (s *shellEval) run(src string) bool {
 		return true
 	}
 	s.collect(f)
-	// Values computed while variables were still being collected may be
-	// incomplete.
+	s.memo = map[wordKey][]string{}
+	s.commandPrepass(f)
+	// Values computed while variables were still being collected (or before
+	// stdin producers are known) may be incomplete.
 	s.memo = map[wordKey][]string{}
 	s.prodMemo = map[*syntax.Stmt]*stdinInfo{}
 	s.visit(f)
