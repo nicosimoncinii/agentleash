@@ -12,6 +12,10 @@ func FuzzEvaluate(f *testing.F) {
 	} {
 		f.Add(s)
 	}
+	// Interpreter scans that used to be quadratic (see interp_perf_test.go).
+	for _, c := range interpWorstCaseShapes {
+		f.Add(interpWorstCase(c.prefix, c.unit, c.suffix, 4<<10))
+	}
 	e := New(testPolicy())
 	f.Fuzz(func(t *testing.T, cmd string) {
 		for _, sh := range []Shell{ShellBash, ShellPowerShell, ShellAuto} {

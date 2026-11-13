@@ -38,6 +38,7 @@ var interpreters = set(
 	"node", "nodejs", "deno", "bun", "ruby", "irb", "perl", "php", "lua", "luajit",
 	"rscript", "r", "osascript", "tclsh", "wish", "julia", "groovy",
 	"awk", "gawk", "mawk", "nawk", "sed", "jq", "yq",
+	"jshell", "elixir", "erl", "guile", "racket", "ghc", "ghci", "clisp", "sbcl", "scala", "nix",
 )
 
 // shells re-parse a string argument (-c) or read a script.

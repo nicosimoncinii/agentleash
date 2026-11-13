@@ -1,0 +1,306 @@
+description: Interpreter one-liners that hide secret reads (red-team regression set 2)
+cases:
+  # Concatenation inside argument lists: the separator between arguments is a comma.
+  - name: python concat then mode arg
+    tool: shell
+    command: "python3 -c \"print(open('.e'+'nv','r').read())\""
+    expect: deny
+    note: The second argument ('r') must not be glued onto the concatenated path.
+  - name: node concat then encoding arg
+    tool: shell
+    command: "node -e \"console.log(require('fs').readFileSync('.e'+'nv','utf8'))\""
+    expect: deny
+    note: The encoding literal 'utf8' is a separate argument, not part of the path.
+  - name: node spawnSync argv array concat
+    tool: shell
+    command: "node -e \"require('child_process').spawnSync('cat',['.e'+'nv'],{stdio:'inherit'})\""
+    expect: deny
+    note: Each array element is its own argument.
+  - name: python subprocess list concat
+    tool: shell
+    command: "python3 -c \"import subprocess;subprocess.run(['cat','.e'+'nv'])\""
+    expect: deny
+    note: Same as the spawnSync case, list elements are separate arguments.
+
+  # Environment accessors spelled differently.
+  - name: python posix.environ
+    tool: shell
+    command: "python3 -c \"import posix;print(posix.environ)\""
+    expect: deny
+    note: posix.environ is the same mapping as os.environ.
+  - name: python nt.environ
+    tool: shell
+    command: "python3 -c \"import nt;print(nt.environ)\""
+    expect: deny
+    note: Windows twin of posix.environ.
+  - name: python import os as alias
+    tool: shell
+    command: "python3 -c \"import os as o;print(o.environ)\""
+    expect: deny
+    note: Module alias, o.environ is not spelled os.environ.
+  - name: python __import__ environ
+    tool: shell
+    command: "python3 -c \"print(__import__('os').environ)\""
+    expect: deny
+    note: The os module is reached through __import__().
+  - name: python sys.modules environ
+    tool: shell
+    command: "python3 -c \"import sys;print(sys.modules['os'].environ)\""
+    expect: deny
+    note: The os module is reached through sys.modules.
+  - name: python getenvb
+    tool: shell
+    command: "python3 -c \"import os;print(os.getenvb(b'API_KEY'))\""
+    expect: deny
+    note: Bytes variant of getenv with a bytes literal name.
+  - name: python getattr environ built by concatenation
+    tool: shell
+    command: "python3 -c \"import os;print(getattr(os,'envi'+'ron'))\""
+    expect: deny
+    note: A concatenated literal that spells an environment accessor.
+  - name: node process bracket env
+    tool: shell
+    command: "node -p \"process['env']\""
+    expect: deny
+    note: Bracket access instead of process.env.
+  - name: node destructured env
+    tool: shell
+    command: "node -e \"const {env}=process;console.log(env)\""
+    expect: deny
+    note: Destructuring, no process.env token appears.
+  - name: node process alias env
+    tool: shell
+    command: "node -e \"const p=process;console.log(p.env)\""
+    expect: deny
+    note: process is aliased to another name.
+  - name: node print process object
+    tool: shell
+    command: "node -p \"process\""
+    expect: deny
+    note: -p prints the whole process object, including env.
+  - name: node process passed to console.log
+    tool: shell
+    command: "node -e \"console.log(process)\""
+    expect: deny
+    note: Printing the process object prints its env property.
+  - name: node spread process
+    tool: shell
+    command: "node -e \"const o={...process};console.log(o.env)\""
+    expect: deny
+    note: The spread copies env into another object.
+  - name: node require process alias
+    tool: shell
+    command: "node -e \"console.log(require('node:process').env)\""
+    expect: deny
+    note: The process module is reached through require().
+  - name: node report environmentVariables
+    tool: shell
+    command: "node -p \"process.report.getReport().environmentVariables\""
+    expect: deny
+    note: The diagnostic report contains the whole environment.
+  - name: perl Env module
+    tool: shell
+    command: "perl -MEnv=API_KEY -e 'print $API_KEY'"
+    expect: deny
+    note: Env.pm ties environment variables to plain Perl variables.
+  - name: perl Env module all
+    tool: shell
+    command: "perl -MEnv -e 'print $API_KEY'"
+    expect: deny
+    note: -MEnv without a list ties every environment variable.
+  - name: perl use Env
+    tool: shell
+    command: "perl -e 'use Env; print $API_KEY'"
+    expect: deny
+    note: Env.pm imported inside the program.
+  - name: perl use Env with a secret name
+    tool: shell
+    command: "perl -e 'use Env qw(PATH API_KEY); print $API_KEY'"
+    expect: deny
+    note: The import list names a secret variable.
+  - name: php -i
+    tool: shell
+    command: "php -i"
+    expect: deny
+    note: php -i (phpinfo) prints the whole environment.
+  - name: php phpinfo
+    tool: shell
+    command: "php -r 'phpinfo();'"
+    expect: deny
+    note: phpinfo() dumps all environment variables.
+  - name: php variable function getenv
+    tool: shell
+    command: "php -r '$f=\"get\".\"env\";print_r($f());'"
+    expect: deny
+    note: getenv() called through a variable function name built by concatenation.
+  - name: ruby const_get ENV
+    tool: shell
+    command: "ruby -e 'puts Object.const_get(:ENV).to_h'"
+    expect: deny
+    note: ENV reached via reflection.
+  - name: ruby backtick interpolation
+    tool: shell
+    command: "ruby -e 'puts `cat .e#{\"nv\"}`'"
+    expect: deny
+    note: Literal string interpolation inside a backtick command.
+
+  # Decoding tricks.
+  - name: python slice of literal
+    tool: shell
+    command: "python3 -c \"print(open('x.env'[1:]).read())\""
+    expect: deny
+    note: String slicing removes a harmless prefix.
+  - name: node slice of literal
+    tool: shell
+    command: "node -e \"console.log(require('fs').readFileSync('x.env'.slice(1),'utf8'))\""
+    expect: deny
+    note: JavaScript twin of python slice of literal.
+  - name: python bytes list path
+    tool: shell
+    command: "python3 -c \"print(open(bytes([46,101,110,118])).read())\""
+    expect: deny
+    note: The path is a list of byte values.
+  - name: python named unicode escape
+    tool: shell
+    command: "python3 -c \"print(open('\\N{FULL STOP}env').read())\""
+    expect: deny
+    note: Python named escape for '.'.
+  - name: node unicode brace escape
+    tool: shell
+    command: "node -e \"console.log(require('fs').readFileSync('\\u{2e}env','utf8'))\""
+    expect: deny
+    note: ES6 code point escape for '.'.
+  - name: lua decimal escape
+    tool: shell
+    command: "lua -e 'print(io.open(\"\\46env\"):read(\"a\"))' "
+    expect: deny
+    note: Lua decimal escape 46 is '.'.
+  - name: python sys.argv concat
+    tool: shell
+    command: "python3 -c \"import sys;print(open(sys.argv[1]+sys.argv[2]).read())\" .e nv"
+    expect: deny
+    note: The path is split across two harmless shell operands and joined inside the program.
+  - name: node process.argv concat
+    tool: shell
+    command: "node -e \"console.log(require('fs').readFileSync(process.argv[1]+process.argv[2],'utf8'))\" .e nv"
+    expect: deny
+    note: Same as python sys.argv concat.
+  - name: GAP python percent format
+    tool: shell
+    command: "python3 -c \"print(open('%senv' % '.').read())\""
+    expect: deny
+    note: printf-style formatting builds the path.
+  - name: python str.format
+    tool: shell
+    command: "python3 -c \"print(open('{}env'.format('.')).read())\""
+    expect: deny
+    note: str.format builds the path.
+
+  # Implicit loaders: no secret path appears in the code.
+  - name: python listdir read all
+    tool: shell
+    command: "python3 -c \"import os;[print(open(f).read()) for f in os.listdir('.')]\""
+    expect: deny
+    note: Reads every file in the cwd including .env; no literal names a secret.
+  - name: node readdirSync read all
+    tool: shell
+    command: "node -e \"const f=require('fs');for(const n of f.readdirSync('.'))console.log(f.readFileSync(n,'utf8'))\""
+    expect: deny
+    note: Node equivalent of python listdir read all.
+  - name: python pathlib iterdir read all
+    tool: shell
+    command: "python3 -c \"import pathlib;[print(p.read_text()) for p in pathlib.Path('.').iterdir()]\""
+    expect: deny
+    note: pathlib equivalent of python listdir read all.
+  - name: python dotenv_values
+    tool: shell
+    command: "python3 -c \"import dotenv;print(dotenv.dotenv_values())\""
+    expect: deny
+    note: python-dotenv loads ./.env implicitly; no path appears in the code.
+  - name: python load_dotenv
+    tool: shell
+    command: "python3 -c \"from dotenv import load_dotenv;load_dotenv();import os;print(os.environ['HOME'])\""
+    expect: deny
+    note: load_dotenv reads ./.env implicitly.
+  - name: python -m dotenv list
+    tool: shell
+    command: "python3 -m dotenv list"
+    expect: deny
+    note: python-dotenv CLI prints every key=value of ./.env.
+  - name: node dotenv config parsed
+    tool: shell
+    command: "node -p \"require('dotenv').config().parsed\""
+    expect: deny
+    note: dotenv loads ./.env implicitly and -p prints the parsed object.
+
+  # Interpreters whose inline code was not scanned.
+  - name: tclsh here-string
+    tool: shell
+    command: "tclsh <<<'puts [exec cat .env]'"
+    expect: deny
+    note: Tcl bracket command substitution glues ']' onto the path token.
+  - name: jshell from stdin
+    tool: shell
+    command: "echo 'System.out.println(new String(java.nio.file.Files.readAllBytes(java.nio.file.Path.of(\".env\"))))' | jshell -"
+    expect: deny
+    note: jshell reads Java snippets from stdin.
+  - name: elixir -e
+    tool: shell
+    command: "elixir -e 'IO.puts File.read!(\".env\")'"
+    expect: deny
+    note: Inline Elixir code.
+  - name: elixir System.get_env
+    tool: shell
+    command: "elixir -e 'IO.puts System.get_env(\"API_KEY\")'"
+    expect: deny
+    note: Elixir environment accessor.
+  - name: erl -eval
+    tool: shell
+    command: "erl -noshell -eval 'io:format(\"~s\",[element(2,file:read_file(\".env\"))]),halt().'"
+    expect: deny
+    note: Inline Erlang code given with the single-dash long option -eval.
+  - name: guile -c
+    tool: shell
+    command: "guile -c '(display (call-with-input-file \".env\" get-string-all))'"
+    expect: deny
+    note: Inline Scheme code.
+  - name: racket -e
+    tool: shell
+    command: "racket -e '(display (file->string \".env\"))'"
+    expect: deny
+    note: Inline Racket code.
+  - name: racket getenv
+    tool: shell
+    command: "racket -e '(display (getenv \"API_KEY\"))'"
+    expect: deny
+    note: Lisp-style call, getenv and its argument are separated by a space.
+  - name: ghc -e
+    tool: shell
+    command: "ghc -e 'readFile \".env\" >>= putStr'"
+    expect: deny
+    note: Inline Haskell expression.
+  - name: clisp -x
+    tool: shell
+    command: "clisp -x '(with-open-file (s \".env\") (print (read-line s)))'"
+    expect: deny
+    note: Inline Common Lisp code.
+  - name: sbcl --eval
+    tool: shell
+    command: "sbcl --noinform --eval '(print (uiop:read-file-string \".env\"))' --quit"
+    expect: deny
+    note: Inline Common Lisp code.
+  - name: scala -e
+    tool: shell
+    command: "scala -e 'println(scala.io.Source.fromFile(\".env\").mkString)'"
+    expect: deny
+    note: Inline Scala code.
+  - name: nix getEnv
+    tool: shell
+    command: "nix eval --impure --expr 'builtins.getEnv \"API_KEY\"'"
+    expect: deny
+    note: nix expression reads a secret env var.
+  - name: nix readFile
+    tool: shell
+    command: "nix eval --impure --raw --expr 'builtins.readFile ./.env'"
+    expect: deny
+    note: nix expression reads the file through a path literal.

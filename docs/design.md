@@ -390,13 +390,42 @@ Anything only known at runtime becomes a wildcard:
 - `eval`/`sh -c`/`source` of runtime text, and piping unknown or decoded data into a shell or
   interpreter (`curl … | bash`, `bash <(curl …)`) are denied (`dynamic-shell`).
 
-Interpreter one-liners (`python -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`, awk/sed/jq
-programs, heredocs fed to interpreters) are scanned heuristically: string literals (also
-concatenated with `+`, `,`, `.join`) and bare tokens go through the path rules; environment
-accessors (`os.environ[...]`, `process.env.X`, `ENV[...]`, `$ENV{...}`, `ENVIRON[...]`,
-`getenv(...)`, jq `env`) must name a non-secret variable literally; decode + file/exec
-primitives together are denied; strings passed to `system()`/`subprocess`/`exec` are
-re-parsed as shell.
+Interpreter one-liners (`python -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`, `lua -e`,
+`elixir -e`, `erl -eval`, `guile -c`, `racket -e`, `ghc -e`, `clisp -x`, `sbcl --eval`,
+`scala -e`, `nix eval --expr`, awk/sed/jq programs, code piped or heredoc'd into stdin
+interpreters such as `tclsh` and `jshell -`) are scanned heuristically:
+- string literals and bare tokens go through the path rules. Literals are decoded first
+  (C escapes, `\N{FULL STOP}`, `\u{2e}`, Lua decimal `\46`, literal interpolation `#{"nv"}`/
+  `${'nv'}`) and also checked after slicing (`'x.env'[1:]`, `.slice(1)`), `%`/`.format()`
+  substitution with literal arguments, and concatenation with `+`, `.` and `.join`, both per
+  argument (`open('.e'+'nv','r')`) and across a comma-separated list
+  (`''.join(['.e','nv'])`). Lists of printable byte values (`bytes([46,101,110,118])`,
+  `String.fromCharCode(...)`) are decoded too;
+- when the program reads its operands (`sys.argv`, `process.argv`, `ARGV`, ...), adjacent
+  operands are joined and path-checked (`python -c '…argv[1]+argv[2]…' .e nv`);
+- environment accessors must name a non-secret variable literally: `environ` in any spelling
+  (`os.`, `posix.`, `nt.`, a module alias, `__import__('os').`), `getenv`/`getenvb`/`getEnv`/
+  `get_env`/`lookupEnv` (also Lisp/Haskell/nix `getenv "NAME"`), `process.env.X`,
+  `process['env']`, `sys.env`, `ENV[...]`, `$ENV{...}`, `ENVIRON[...]`, Tcl `$env(X)`, jq `env`,
+  and `perl -MEnv=NAME`/`use Env qw(...)`. Whole-environment dumps are denied: `php -i`,
+  `phpinfo()`, `process.report`, `Object.const_get(:ENV)`, `-MEnv` without names, and the
+  JavaScript `process` object used as a value: an alias or destructuring (`p=process`,
+  `const {env}=process`), a spread, an argument (`console.log(process)`, but not an array
+  callback such as `forEach(process)`), a returned value or a bare expression (`node -p
+  process`). Property names (`obj.process`, `{process: 1}`) and comments are ignored. A
+  concatenated literal that spells an accessor (`"get"."env"`, `'envi'+'ron'`) is denied;
+- implicit loaders count as reads: dotenv libraries without an explicit path
+  (`load_dotenv()`, `dotenv_values()`, `require('dotenv')`, `python -m dotenv`) read `./.env`,
+  and code that lists the current, home, root or a runtime-chosen directory (`os.listdir`,
+  `readdirSync`, `iterdir`, `os.walk`, `Dir.children`, ...) and opens or runs what it finds
+  is treated as reading every file there, but only when the code also reads file contents
+  (`open(`, `read_text`, `readFileSync`, `cat`, ...). Listing a named subdirectory, or only
+  printing or passing on the names, is allowed;
+- decode + file/exec primitives together are denied; strings passed to
+  `system()`/`subprocess`/`exec` are re-parsed as shell.
+
+Every scan is linear in the program and charged to the work budget (§7.8). One interpreter
+program larger than 64 KB is not scanned and is denied (`too-complex`).
 
 Recursive copies/archives (`tar c`, `zip -r`, `cp -r`, `rsync`, `scp -r`) and `diff -r`
 (without `-x`/`--exclude`) of a directory containing the project root or home, and recursive `grep`/`rg --hidden` for a secret variable
@@ -493,8 +522,10 @@ the most specific one (named secret before generic dynamic rules).
   paths match only the "anywhere" patterns (`.env`, `*.pem`): we assume a runtime `cd` does not
   enter a home-anchored secret directory (`cd "$(dirname ~/.aws/credentials)" && cat
   credentials` is not caught).
-- Interpreter scanning is heuristic (computed strings beyond simple concatenation, `getattr`,
-  `'%senv' % '.'` formatting, reflection, compression, custom encodings).
+- Interpreter scanning is heuristic: computed strings beyond literal concatenation, slicing and
+  formatting (variables: `p='.e'; open(p+'nv')`), reflection with runtime names, compression,
+  custom encodings, and directory listings of a named subdirectory that holds a nested secret
+  are not caught.
 - Tools with their own command languages are partially covered (`sqlite3` `readfile()`,
   `.shell`/`.system`, `.read`/`.import` file names and `-cmd` are checked): `make --eval`, `emacs --eval`, vim ex commands without a literal secret, `less` commands,
   `ssh` remote commands.

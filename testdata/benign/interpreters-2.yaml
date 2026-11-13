@@ -1,0 +1,227 @@
+description: Harmless interpreter one-liners that must stay allowed (counterparts of attacks/interpreters-2)
+cases:
+  - name: python join with comma separator
+    tool: shell
+    command: "python -c \"print(','.join(['a','b']))\""
+    expect: allow
+  - name: python open with mode
+    tool: shell
+    command: "python3 -c \"print(open('READ'+'ME.md','r').read())\""
+    expect: allow
+  - name: node process.version
+    tool: shell
+    command: "node -e \"console.log(process.version)\""
+    expect: allow
+  - name: node process platform and argv
+    tool: shell
+    command: "node -e \"console.log(process.platform, process.argv.length, process.cwd())\""
+    expect: allow
+  - name: node process word in a string
+    tool: shell
+    command: "node -e \"console.log('process finished')\""
+    expect: allow
+  - name: node process.env named variable
+    tool: shell
+    command: "node -p \"process.env.NODE_ENV\""
+    expect: allow
+  - name: node process bracket named variable
+    tool: shell
+    command: "node -p \"process['env']['HOME']\""
+    expect: allow
+  - name: python getcwd
+    tool: shell
+    command: "python -c \"import os; print(os.getcwd())\""
+    expect: allow
+  - name: python environ named variable
+    tool: shell
+    command: "python3 -c \"import os as o; print(o.environ['HOME'])\""
+    expect: allow
+  - name: python getenv named variable
+    tool: shell
+    command: "python3 -c \"import os; print(os.getenv('PATH'))\""
+    expect: allow
+  - name: node path join
+    tool: shell
+    command: "node -p \"require('path').join('a','b')\""
+    expect: allow
+  - name: node readFileSync package.json with encoding
+    tool: shell
+    command: "node -e \"console.log(require('fs').readFileSync('package'+'.json','utf8'))\""
+    expect: allow
+  - name: python listdir without reading
+    tool: shell
+    command: "python3 -c \"import os; print(os.listdir('.'))\""
+    expect: allow
+  - name: node readdirSync without reading
+    tool: shell
+    command: "node -e \"console.log(require('fs').readdirSync('.'))\""
+    expect: allow
+  - name: python read files of a subdirectory
+    tool: shell
+    command: "python3 -c \"import os;[print(open('src/'+f).read()) for f in os.listdir('src')]\""
+    expect: allow
+  - name: python bytes literal
+    tool: shell
+    command: "python3 -c \"print(bytes([104,105]).decode())\""
+    expect: allow
+  - name: python slice
+    tool: shell
+    command: "python3 -c \"print('hello world'[0:5])\""
+    expect: allow
+  - name: python percent format
+    tool: shell
+    command: "python3 -c \"print('%s items' % 3)\""
+    expect: allow
+  - name: python sys.argv operands
+    tool: shell
+    command: "python3 -c \"import sys;print(sys.argv[1]+sys.argv[2])\" foo bar"
+    expect: allow
+  - name: perl strict and warnings
+    tool: shell
+    command: "perl -Mstrict -Mwarnings -e 'print 1+1'"
+    expect: allow
+  - name: perl Env with harmless name
+    tool: shell
+    command: "perl -MEnv=HOME -e 'print $HOME'"
+    expect: allow
+  - name: perl use Env with harmless names
+    tool: shell
+    command: "perl -e 'use Env qw(HOME PATH); print $HOME'"
+    expect: allow
+  - name: php version
+    tool: shell
+    command: "php -v"
+    expect: allow
+  - name: php -r arithmetic
+    tool: shell
+    command: "php -r 'echo 1+2;'"
+    expect: allow
+  - name: ruby ENV named variable
+    tool: shell
+    command: "ruby -e 'puts ENV[\"HOME\"]'"
+    expect: allow
+  - name: ruby backtick git
+    tool: shell
+    command: "ruby -e 'puts `git status`'"
+    expect: allow
+  - name: lua print
+    tool: shell
+    command: "lua -e 'print(\"\\46\")'"
+    expect: allow
+  - name: elixir arithmetic
+    tool: shell
+    command: "elixir -e 'IO.puts 1 + 2'"
+    expect: allow
+  - name: erl eval halt
+    tool: shell
+    command: "erl -noshell -eval 'io:format(\"~p~n\",[1+2]),halt().'"
+    expect: allow
+  - name: ghc -e arithmetic
+    tool: shell
+    command: "ghc -e 'print (1 + 2)'"
+    expect: allow
+  - name: ghc compile with warnings
+    tool: shell
+    command: "ghc -Werror -O2 Main.hs"
+    expect: allow
+  - name: racket -e
+    tool: shell
+    command: "racket -e '(displayln (+ 1 2))'"
+    expect: allow
+  - name: nix eval harmless env var
+    tool: shell
+    command: "nix eval --impure --expr 'builtins.getEnv \"HOME\"'"
+    expect: allow
+  - name: nix build
+    tool: shell
+    command: "nix build .#default"
+    expect: allow
+  - name: scala -e println
+    tool: shell
+    command: "scala -e 'println(42)'"
+    expect: allow
+  - name: tclsh here-string
+    tool: shell
+    command: "tclsh <<<'puts [expr {1 + 2}]'"
+    expect: allow
+  - name: jshell from stdin
+    tool: shell
+    command: "echo 'System.out.println(1+2)' | jshell -"
+    expect: allow
+  - name: python json load of named file
+    tool: shell
+    command: "python3 -c \"import json;print(json.load(open('package.json'))['name'])\""
+    expect: allow
+  - name: node process.stdout
+    tool: shell
+    command: "node -e \"process.stdout.write('hi')\""
+    expect: allow
+  - name: node typeof process
+    tool: shell
+    command: "node -e \"if (typeof process !== 'undefined') console.log(1)\""
+    expect: allow
+  - name: node child_process execSync git
+    tool: shell
+    command: "node -e \"const {execSync}=require('child_process'); console.log(execSync('git status').toString())\""
+    expect: allow
+  - name: node template literal mentioning process
+    tool: shell
+    command: "node -e 'console.log(`process ${process.pid} done`)'"
+    expect: allow
+  - name: node read files of a subdirectory
+    tool: shell
+    command: "node -e \"const fs=require('fs');for (const f of fs.readdirSync('src')) console.log(fs.readFileSync('src/'+f,'utf8').length)\""
+    expect: allow
+  - name: node dependency named dotenv
+    tool: shell
+    command: "node -p \"require('./package.json').dependencies.dotenv\""
+    expect: allow
+  - name: awk searching for dotenv text
+    tool: shell
+    command: "awk '/dotenv/' package.json"
+    expect: allow
+  - name: python glob of sources
+    tool: shell
+    command: "python3 -c \"import glob; print(glob.glob('src/*.py'))\""
+    expect: allow
+  - name: python str.format
+    tool: shell
+    command: "python3 -c \"print('{} and {}'.format('a','b'))\""
+    expect: allow
+  - name: ruby Dir.children of lib
+    tool: shell
+    command: "ruby -e 'puts Dir.children(\"lib\")'"
+    expect: allow
+  - name: node process as a forEach callback
+    tool: shell
+    command: "node -e \"[1,2].forEach(process)\""
+    expect: allow
+    note: Throws at runtime (process is not a function); nothing is printed.
+  - name: node object key named process
+    tool: shell
+    command: "node -e \"const x = { process: true }; console.log(x)\""
+    expect: allow
+  - name: node comment mentioning process
+    tool: shell
+    command: "node -e $'// process data\\nconsole.log(1)'"
+    expect: allow
+  - name: node block comment mentioning process
+    tool: shell
+    command: "node -e \"/* process */ console.log(1)\""
+    expect: allow
+  - name: node property named process
+    tool: shell
+    command: "node -e \"const obj = {}; obj.process = 1; console.log(obj)\""
+    expect: allow
+  - name: python iterdir names only
+    tool: shell
+    command: "python -c \"import pathlib; print([p.name for p in pathlib.Path('.').iterdir()])\""
+    expect: allow
+  - name: python listdir passed to ls
+    tool: shell
+    command: "python -c \"import os,subprocess; subprocess.run(['ls'] + os.listdir('.'))\""
+    expect: allow
+  - name: python byte string literal
+    tool: shell
+    command: "python3 -c \"import sys; sys.stdout.buffer.write(b'ok')\""
+    expect: allow
