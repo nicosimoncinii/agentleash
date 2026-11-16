@@ -156,6 +156,29 @@ func TestRecursiveCopyAsks(t *testing.T) {
 	})
 }
 
+// rg with every ignore rule disabled searches gitignored secrets too.
+func TestUnrestrictedRgAsks(t *testing.T) {
+	runCases(t, ShellBash, []tc{
+		{"rg -uu TODO", Ask, "secret-dir-copy"},
+		{"rg -uuu foo .", Ask, "secret-dir-copy"},
+		{"rg --hidden --no-ignore foo ~", Ask, "secret-dir-copy"},
+		{"rg -u --hidden foo", Ask, "secret-dir-copy"},
+		{"rg -u. foo", Ask, "secret-dir-copy"},
+		{"rg -uu -n -A 3 foo /home/u", Ask, "secret-dir-copy"},
+		{"rg --unrestricted --unrestricted -e foo", Ask, "secret-dir-copy"},
+		{"rg -uu -m 5 foo", Ask, "secret-dir-copy"},
+		{"rg TODO", Allow, ""},
+		{"rg -u TODO", Allow, ""},
+		{"rg --hidden TODO", Allow, ""},
+		{"rg -uu TODO src/", Allow, ""},
+		{"rg -uu -l TODO", Allow, ""},
+		{"rg -uu --files", Allow, ""},
+		{"rg -uu -tgo TODO", Allow, ""},
+		{"rg -uu --glob '!.env*' TODO", Allow, ""},
+		{"rg -uu -e foo src lib", Allow, ""},
+	})
+}
+
 func TestCompilePatternSemantics(t *testing.T) {
 	cases := []struct {
 		pattern, anchor, home, want string

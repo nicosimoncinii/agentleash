@@ -310,9 +310,18 @@ globs.
 a real ancestor of an *anchored* pattern's fixed prefix is denied too: `~/.ssh` for
 `~/.ssh/id_*`, `~/.config` for `~/.config/gcloud/**`, `rsync -a ~/.ssh/ host:`. A file
 (`~/.ssh/id_ed25519.pub`) is never treated as such a directory, so `allow_files` apply to it
-normally. Exceptions: directory navigation (`cd`, `pushd`), metadata-only commands, and
+normally. Exceptions: directory navigation (`cd`, `pushd`), metadata-only commands,
 directories that contain the project root or home (covered by the recursive copy/search
-**ask** rules).
+**ask** rules), and the subcommand words of known CLIs (#34): for `git`, `docker`/`podman`
+(and `compose`), `kubectl`/`oc`, `npm`/`pnpm`/`yarn`, `cargo`, `gh`, `gcloud`, `az`, `aws`,
+`pip`, `poetry`, `conda`, ... the leading operands that name subcommands (`git config`,
+`docker compose config`, `npm config list`, `kubectl config view`) are verbs, not paths, so
+`config` does not match `config/secrets.yml`. Only the directory rule is skipped for them (a
+verb that is itself a secret path is still denied). The scan stops at the first operand
+that is not a known nested subcommand, at a word that looks like a path (`/`, `.`, a glob),
+and at an unknown option (its value could be a path); values of known options (`git -C
+config`, `docker compose -f config`) keep their path role, as do `cat config`, `tar czf x.tgz
+config` and `cp -r config /tmp`.
 
 **Tool-expanded globs:** values of `grep --include`, `rg -g/--glob/--iglob`, `ag -G`, and git
 pathspecs of content commands (`log`, `diff`, `show`, `grep`, `archive`, `blame`; arguments
@@ -395,10 +404,35 @@ Anything only known at runtime becomes a wildcard:
 - `eval`/`sh -c`/`source` of runtime text, and piping unknown or decoded data into a shell or
   interpreter (`curl … | bash`, `bash <(curl …)`) are denied (`dynamic-shell`).
 
+**Write-then-run in the same command.** A file the script writes with static content and
+then runs is analysed as what it is. Writes: a `>`/`>>`/`>|`/`&>` redirect of `echo`,
+`printf` (escapes decoded) or `cat` with a heredoc/here-string, `tee` fed by such a producer
+or a heredoc, and `cp`/`mv`/`install` of a written file. Appends are concatenated in source
+order (every suffix of the writes is a possible content, flow-insensitive; echo's trailing
+newline is kept), so `printf 'cat .' > x; printf 'env' >> x; sh x` is `cat .env`. Runs:
+`bash`/`sh`/`zsh FILE`, `source FILE`, `. FILE`, `./FILE` (through wrappers such as `sudo`),
+an interpreter given `FILE` (`python3 FILE`, `node FILE`, ...), and a shell or interpreter
+reading `FILE` on stdin (`bash < FILE`). A shell script is analysed by a child evaluator
+(every rule applies, including parse errors); interpreter code goes through the one-liner
+scanner below; a directly executed file is a shell script unless its shebang (also through
+`env [-S]`) names an interpreter, and an unknown shebang program is `dynamic-shell`. A file
+is matched by its cleaned path or, conservatively, by its base name. Content only known at
+runtime (any other producer, an expansion, a compound command, a non-stdout fd) written to a
+file that is later run is denied (`dynamic-shell`), except the output of a downloader (`curl`,
+`wget`, `iwr`/`irm`, written by a redirect or `tee`): like `curl -o f URL && sh f`, it is
+matched by the command patterns as `curl … | sh` (§7.5), so `curl … > i.sh && sh i.sh` is
+**ask** under the default policy.
+Writes inside `sh -c` strings are seen by later runs in the outer script. Each distinct
+content is analysed once per request and charged to the work budget (§7.8); a file written
+more than 16 times counts as runtime content. A script written in an earlier call is still
+only checked by its path (§7.7).
+
 Interpreter one-liners (`python -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`, `lua -e`,
 `elixir -e`, `erl -eval`, `guile -c`, `racket -e`, `ghc -e`, `clisp -x`, `sbcl --eval`,
-`scala -e`, `nix eval --expr`, awk/sed/jq programs, code piped or heredoc'd into stdin
-interpreters such as `tclsh` and `jshell -`) are scanned heuristically:
+`scala -e`, `nix eval --expr`, `emacs --eval`/`-eval`/`--execute`/`-execute` (operands are
+files to visit and do not stop the scan; `-l`/`--load`/`--script` files are path-checked),
+awk/sed/jq programs, code piped or heredoc'd into stdin interpreters such as `tclsh` and
+`jshell -`) are scanned heuristically:
 - string literals and bare tokens go through the path rules. Literals are decoded first
   (C escapes, `\N{FULL STOP}`, `\u{2e}`, Lua decimal `\46`, literal interpolation `#{"nv"}`/
   `${'nv'}`) and also checked after slicing (`'x.env'[1:]`, `.slice(1)`), `%`/`.format()`
@@ -413,7 +447,8 @@ interpreters such as `tclsh` and `jshell -`) are scanned heuristically:
   `get_env`/`lookupEnv` (also Lisp/Haskell/nix `getenv "NAME"`), `process.env.X`,
   `process['env']`, `sys.env`, `ENV[...]`, `$ENV{...}`, `ENVIRON[...]`, Tcl `$env(X)`, jq `env`,
   and `perl -MEnv=NAME`/`use Env qw(...)`. Whole-environment dumps are denied: `php -i`,
-  `phpinfo()`, `process.report`, `Object.const_get(:ENV)`, `-MEnv` without names, and the
+  `phpinfo()`, `process.report`, `Object.const_get(:ENV)`, `-MEnv` without names, Emacs Lisp
+  `process-environment`/`initial-environment`, and the
   JavaScript `process` object used as a value: an alias or destructuring (`p=process`,
   `const {env}=process`), a spread, an argument (`console.log(process)`, but not an array
   callback such as `forEach(process)`), a returned value or a bare expression (`node -p
@@ -422,19 +457,26 @@ interpreters such as `tclsh` and `jshell -`) are scanned heuristically:
 - implicit loaders count as reads: dotenv libraries without an explicit path
   (`load_dotenv()`, `dotenv_values()`, `require('dotenv')`, `python -m dotenv`) read `./.env`,
   and code that lists the current, home, root or a runtime-chosen directory (`os.listdir`,
-  `readdirSync`, `iterdir`, `os.walk`, `Dir.children`, ...) and opens or runs what it finds
-  is treated as reading every file there, but only when the code also reads file contents
-  (`open(`, `read_text`, `readFileSync`, `cat`, ...). Listing a named subdirectory, or only
-  printing or passing on the names, is allowed;
+  `readdirSync`, `iterdir`, `os.walk`, `Dir.children`, Lisp `(directory-files "." …)`, ...)
+  and opens or runs what it finds is treated as reading every file there, but only when the
+  code also reads file contents (`open(`, `read_text`, `readFileSync`, `cat`,
+  `insert-file-contents`, `find-file`, ...). Listing a named subdirectory, or only printing
+  or passing on the names, is allowed;
 - decode + file/exec primitives together are denied; strings passed to
-  `system()`/`subprocess`/`exec` are re-parsed as shell.
+  `system()`/`subprocess`/`exec`/`shell-command(-to-string)`/`call-process`/`start-process`
+  are re-parsed as shell.
 
 Every scan is linear in the program and charged to the work budget (§7.8). One interpreter
 program larger than 64 KB is not scanned and is denied (`too-complex`).
 
-Recursive copies/archives (`tar c`, `zip -r`, `cp -r`, `rsync`, `scp -r`) and `diff -r`
-(without `-x`/`--exclude`) of a directory containing the project root or home, and recursive `grep`/`rg --hidden` for a secret variable
-name over such a directory, return **ask** (`secret-dir-copy`, `secret-search`).
+Recursive copies/archives (`tar c`, `zip -r`, `cp -r`, `rsync`, `scp -r`), `diff -r`
+(without `-x`/`--exclude`) and `rg` with every ignore rule disabled (`-uu`, `-uuu`, repeated
+`-u`/`--unrestricted`, or `--hidden`/`-.` together with `-u`/`--no-ignore[-vcs]`) of a
+directory containing the project root or home (no path operand means `.`), and recursive
+`grep`/`rg --hidden` for a secret variable name over such a directory, return **ask**
+(`secret-dir-copy`, `secret-search`). An `rg -uu` restricted by `-g`/`--glob`/`-t`/`--type`,
+or printing no content (`-l`, `-c`, `-q`, `--files`), is allowed; plain `rg foo` respects
+`.gitignore` and hidden-file rules and is allowed.
 
 ### 7.3 Environment exposure
 
@@ -552,16 +594,22 @@ the most specific one (named secret before generic dynamic rules).
 
 ### 7.7 Known limitations (not covered by the engine)
 
-- Write-then-execute: a script written with the Write tool (or `cat > x.sh <<EOF`) and run
-  later is only checked by its path, not its content; the same holds for `make`, `npm run`,
-  `python script.py`, Makefiles and other files read by tools. (A `curl`/`wget` download run
-  in the *same* command is matched as `curl … | sh`, §7.5.)
+- Write-then-execute across calls: a script written with the Write tool, or by a shell command
+  in an *earlier* call, and run later is only checked by its path, not its content; the same
+  holds for `make`, `npm run`, Makefiles and other files read by tools. Within one command,
+  a script written by `echo`/`printf`/a heredoc/`tee` and then run is analysed (§7.2), and a
+  `curl`/`wget` download run in the same command is matched as `curl … | sh` (§7.5). Not
+  modelled within one command: files written by other programs (`python -c "open('x','w')…"`,
+  `sed -i`), a `cd` between the write and the run when the base names differ, `awk -f`/`make
+  -f` of a written file, and `deno run`-style subcommands.
 - Command patterns only see one call: a git alias configured in an earlier call
   (`git config --global alias.p 'push -f'`, then `git p` later) or through
   `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n` is not expanded, and a `cd` made in an earlier call is
   only known through `Request.Cwd`.
 - Plain recursive reads of a directory: `grep -r foo .` reads `.env` and prints lines that
-  match `foo`; only searches for a secret variable *name* are flagged. `docker build .` sends
+  match `foo`; only searches for a secret variable *name* are flagged (and `rg` with every
+  ignore rule disabled, `-uu`, is asked, §7.2; plain `rg` skips gitignored and hidden files,
+  but a `.env` that is not gitignored is still searched). `docker build .` sends
   `.env` to the daemon unless `.dockerignore` excludes it.
 - Symlinks/hardlinks created in an *earlier* call (`ln -s .env x`, then `cat x` later) are only
   caught with the injected symlink resolver; hardlinks are never caught. Links created in the
@@ -575,8 +623,12 @@ the most specific one (named secret before generic dynamic rules).
   custom encodings, and directory listings of a named subdirectory that holds a nested secret
   are not caught.
 - Tools with their own command languages are partially covered (`sqlite3` `readfile()`,
-  `.shell`/`.system`, `.read`/`.import` file names and `-cmd` are checked): `make --eval`, `emacs --eval`, vim ex commands without a literal secret, `less` commands,
-  `ssh` remote commands.
+  `.shell`/`.system`, `.read`/`.import` file names and `-cmd` are checked; `emacs --eval` is
+  scanned heuristically like other interpreters, §7.2): `make --eval`, vim ex commands without
+  a literal secret, `less` commands, `ssh` remote commands, and Emacs Lisp files loaded with
+  `-l` (checked by path only).
+- Subcommand words (#34) are recognised only for the CLIs listed in §7.1; for other tools a
+  bare word that names the directory of an anchored secret pattern is still denied.
 - Env forwarding is partially covered: `docker run -e NAME`, `dotenv`/`direnv exec`/`op run`/
   `doppler run` are handled. CLIs that load `./.env` implicitly and print it are denied as a
   read of that file (`dotenv list|get`, `python -m dotenv`, `dotenvx get|keypair|decrypt

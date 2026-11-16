@@ -1,0 +1,128 @@
+description: Scripts written and run in one command, rg, emacs batch jobs and config subcommands (issue #34)
+policy: policies/config-secrets.yaml
+cases:
+  # --- write then run --------------------------------------------------------
+  - name: echo then cat
+    tool: shell
+    command: echo hi > out.txt && cat out.txt
+    expect: allow
+  - name: printf script then sh
+    tool: shell
+    command: printf '#!/bin/sh\necho ok\n' > run.sh && sh run.sh
+    expect: allow
+  - name: heredoc build script
+    tool: shell
+    command: |-
+      cat > build.sh <<'EOF'
+      set -e
+      go build ./...
+      go test ./...
+      EOF
+      bash build.sh
+    expect: allow
+  - name: python script written and run
+    tool: shell
+    command: echo 'print(1 + 1)' > t.py && python3 t.py
+    expect: allow
+  - name: shebang script chmod and run
+    tool: shell
+    command: printf '#!/usr/bin/env python3\nprint("ok")\n' > t && chmod +x t && ./t
+    expect: allow
+  - name: script reading the example env
+    tool: shell
+    command: echo 'cat .env.example' > show.sh && sh show.sh
+    expect: allow
+  - name: appended script
+    tool: shell
+    command: echo 'echo start' > s.sh; echo 'ls -la' >> s.sh; bash s.sh
+    expect: allow
+  - name: unrelated dynamic file not run
+    tool: shell
+    command: date > stamp.txt && bash run.sh
+    expect: allow
+
+  # --- rg -------------------------------------------------------------------
+  - name: rg plain
+    tool: shell
+    command: rg TODO
+    expect: allow
+  - name: rg -uu over src
+    tool: shell
+    command: rg -uu TODO src/
+    expect: allow
+  - name: rg hidden only
+    tool: shell
+    command: rg --hidden TODO
+    expect: allow
+  - name: rg no-ignore only
+    tool: shell
+    command: rg --no-ignore TODO
+    expect: allow
+  - name: rg -uu files with matches
+    tool: shell
+    command: rg -uu -l TODO
+    expect: allow
+  - name: rg -uu restricted by type
+    tool: shell
+    command: rg -uu -t go TODO
+    expect: allow
+
+  # --- emacs ------------------------------------------------------------------
+  - name: emacs batch load init
+    tool: shell
+    command: emacs --batch -l init.el
+    expect: allow
+  - name: emacs batch message
+    tool: shell
+    command: emacs --batch --eval '(message "hello")'
+    expect: allow
+  - name: emacs getenv home
+    tool: shell
+    command: emacs --batch --eval '(princ (getenv "HOME"))'
+    expect: allow
+  - name: emacs byte compile
+    tool: shell
+    command: emacs -Q --batch -f batch-byte-compile foo.el
+    expect: allow
+  - name: emacs open file
+    tool: shell
+    command: emacs README.md
+    expect: allow
+
+  # --- config as a subcommand (issue #34) -----------------------------------
+  - name: docker compose config services
+    tool: shell
+    command: docker compose config --services
+    expect: allow
+  - name: git config user name
+    tool: shell
+    command: git config user.name x
+    expect: allow
+  - name: git config get
+    tool: shell
+    command: git -C . config --get user.email
+    expect: allow
+  - name: npm config list
+    tool: shell
+    command: npm config list
+    expect: allow
+  - name: kubectl config view
+    tool: shell
+    command: kubectl config view
+    expect: allow
+  - name: kubectl config use-context
+    tool: shell
+    command: kubectl --context dev config use-context prod
+    expect: allow
+  - name: pnpm config get
+    tool: shell
+    command: pnpm config get registry
+    expect: allow
+  - name: yarn config get
+    tool: shell
+    command: yarn config get npmRegistryServer
+    expect: allow
+  - name: cd into config
+    tool: shell
+    command: cd config && ls
+    expect: allow

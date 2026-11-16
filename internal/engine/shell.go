@@ -29,6 +29,8 @@ type shellEval struct {
 	globstar  bool
 	// gitAliases are git aliases defined in the script (commands.go).
 	gitAliases *gitAliasSet
+	// written are the files the script writes (written.go).
+	written *writtenFiles
 }
 
 func newShellEval(e *Engine, sec *secretSet, c *collector, depth int) *shellEval {
@@ -42,6 +44,7 @@ func newShellEval(e *Engine, sec *secretSet, c *collector, depth int) *shellEval
 		prodMemo:  map[*syntax.Stmt]*stdinInfo{},
 
 		gitAliases: newGitAliasSet(),
+		written:    newWrittenFiles(),
 	}
 }
 
@@ -67,6 +70,7 @@ func (s *shellEval) child() *shellEval {
 	ch.req = s.req
 	ch.vars = s.vars
 	ch.gitAliases = s.gitAliases
+	ch.written = s.written
 	return ch
 }
 
@@ -103,7 +107,11 @@ func (s *shellEval) run(src string) bool {
 	// stdin producers are known) may be incomplete.
 	s.memo = map[wordKey][]string{}
 	s.prodMemo = map[*syntax.Stmt]*stdinInfo{}
+	s.collectWrites(f)
 	s.visit(f)
+	// After visit: writes made inside nested shells (sh -c '... > f') are
+	// known too.
+	s.checkWrittenRuns(f)
 	return true
 }
 

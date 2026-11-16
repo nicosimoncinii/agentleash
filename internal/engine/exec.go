@@ -197,7 +197,7 @@ func (s *shellEval) processNamed(nameAlt string, args []cmdArg, stdin *stdinInfo
 	if copyCmds[name] {
 		argsToCheck = s.checkCopyDest(name, argsToCheck)
 	}
-	s.checkArgs(checkName, argsToCheck)
+	s.checkArgsRoles(name, checkName, argsToCheck)
 	if readsFileList(name, rest) {
 		s.checkFileList(name, stdin)
 	}
@@ -212,6 +212,9 @@ func (s *shellEval) processNamed(nameAlt string, args []cmdArg, stdin *stdinInfo
 	}
 	if searchers[name] {
 		s.checkRecursiveSearch(name, rest)
+	}
+	if name == "rg" {
+		s.checkUnrestrictedSearch(rest)
 	}
 	for _, g := range toolGlobs(name, rest) {
 		s.checkToolGlob(name, g)
@@ -417,7 +420,13 @@ func (s *shellEval) checkArgs(name string, args []cmdArg) {
 	}
 }
 
-func (s *shellEval) checkArg(name string, a cmdArg) {
+func (s *shellEval) checkArg(name string, a cmdArg) { s.checkArgDir(name, a, true) }
+
+// checkArgNoDir is checkArg for a subcommand word (git config, npm config):
+// it is not a path, so the directory-holding-secrets rule does not apply.
+func (s *shellEval) checkArgNoDir(name string, a cmdArg) { s.checkArgDir(name, a, false) }
+
+func (s *shellEval) checkArgDir(name string, a cmdArg, dirRule bool) {
 	if printOnly[name] || existenceOnly[name] {
 		return
 	}
@@ -426,7 +435,7 @@ func (s *shellEval) checkArg(name string, a cmdArg) {
 		for _, cand := range argCandidates(alt) {
 			m, ok := s.sec.checkPath(cand)
 			if !ok {
-				if !dyn && !metadataOnly[name] && !dirNavigation[name] {
+				if dirRule && !dyn && !metadataOnly[name] && !dirNavigation[name] {
 					// A directory holding secrets (rsync -a ~/.ssh/ ...).
 					if dm, ok := s.sec.dirHoldsSecret(cand); ok {
 						s.c.deny(RuleSecretFile+":"+dm.pattern, dirReason(dm, verbFor(name), s.sec))

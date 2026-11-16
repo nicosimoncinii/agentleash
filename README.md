@@ -95,10 +95,11 @@ work, and keep real secrets out of your repository.
 
 Known gaps in v0.1 (details in [docs/design.md](docs/design.md) §7.7):
 
-- **Write-then-execute**: a script, Makefile or `npm run` target is checked by path, not by
-  its contents.
+- **Write-then-execute across calls**: a script, Makefile or `npm run` target written earlier
+  (or with the Write tool) is checked by path, not by its contents. A script written and run
+  in the *same* command (`echo … > x.sh && bash x.sh`) is analysed.
 - **Whole-tree reads** such as `grep -r foo .` or `docker build .` can still reach `.env`
-  (use `.dockerignore`).
+  (use `.dockerignore`); `rg -uu` over the project asks first.
 - **Interpreter one-liners** (`python -c`, `node -e`) are scanned heuristically; heavily
   obfuscated code can get through.
 - **PowerShell** is tokenized, not fully parsed.

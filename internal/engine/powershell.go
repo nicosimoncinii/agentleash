@@ -596,9 +596,10 @@ func (p *pwshEval) statement(st *psStmt) {
 	if name == "copy-item" || name == "move-item" {
 		words = p.copyDest(name, words)
 	}
-	for _, t := range words {
+	verbs := verbArgs(name, p.wordArgs(words))
+	for i, t := range words {
 		if !psLocation[name] {
-			p.checkWord(name, t, st.readerCtx)
+			p.checkWordDir(name, t, st.readerCtx, !verbs[i])
 		}
 	}
 	if (psReaders[name] || name == "foreach-object") && st.pipeIn && st.prev != nil && !hasPathArg(args) {
@@ -835,6 +836,26 @@ func hasPathArg(args []psTok) bool {
 
 // checkWord applies the path rules to one word.
 func (p *pwshEval) checkWord(name string, t psTok, readerCtx bool) {
+	p.checkWordDir(name, t, readerCtx, true)
+}
+
+// wordArgs converts words to static/dynamic cmdArgs for verbArgs.
+func (p *pwshEval) wordArgs(words []psTok) []cmdArg {
+	out := make([]cmdArg, len(words))
+	for i, t := range words {
+		alts := p.resolve(t.text, 0)
+		if len(alts) == 1 && !isDynamic(alts[0]) {
+			out[i] = litArg(plain(alts[0]))
+		} else {
+			out[i] = dynArg()
+		}
+	}
+	return out
+}
+
+// checkWordDir is checkWord; dirRule false exempts a subcommand word
+// (git config, kubectl config) from the directory-holding-secrets rule.
+func (p *pwshEval) checkWordDir(name string, t psTok, readerCtx, dirRule bool) {
 	if psPrint[name] || name == "test-path" || existenceOnly[name] {
 		return
 	}
@@ -844,7 +865,7 @@ func (p *pwshEval) checkWord(name string, t psTok, readerCtx bool) {
 		for _, cand := range argCandidates(alt) {
 			m, ok := p.sec.checkPath(cand)
 			if !ok {
-				if reader && !dyn {
+				if reader && dirRule && !dyn {
 					if dm, ok := p.sec.dirHoldsSecret(cand); ok {
 						p.c.deny(RuleSecretFile+":"+dm.pattern, dirReason(dm, "reading", p.sec))
 					}

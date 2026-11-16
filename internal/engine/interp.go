@@ -50,6 +50,7 @@ var codeOptWords = map[string]map[string]bool{
 	"ghci":   set("-e"),
 	"clisp":  set("-x"),
 	"sbcl":   set("--eval"),
+	"emacs":  set("--eval", "-eval", "--execute", "-execute"),
 	"scala":  set("-e"),
 	"nix":    set("--expr", "-E"),
 }
@@ -61,7 +62,9 @@ var programFirst = set("awk", "gawk", "mawk", "nawk", "sed", "jq", "yq")
 
 // operandFree interpreters have no script operand: their operands are
 // subcommands or option values (nix eval --expr, erl -pa dir -eval).
-var operandFree = set("nix", "erl")
+// emacs operands are files to visit, and options may follow them
+// (emacs notes.txt --eval '(...)').
+var operandFree = set("nix", "erl", "emacs")
 
 // stdinInterpreters read a program from stdin when given no script.
 var stdinInterpreters = set("python", "python2", "python3", "pypy", "pypy3", "py", "node", "nodejs", "bun", "deno",
@@ -82,6 +85,8 @@ var interpValueOpts = map[string]map[string]bool{
 	"guile":  set("-L", "-l", "-C", "-x"),
 	"clisp":  set("-i", "-M", "-B", "-E", "-L"),
 	"sbcl":   set("--load", "--core", "--dynamic-space-size", "--control-stack-size"),
+	"emacs": set("-l", "--load", "-f", "--funcall", "-L", "--directory", "--script", "-t", "--terminal",
+		"-d", "--display", "--chdir", "--dump-file", "--init-directory", "--insert", "--file", "--find-file", "--visit"),
 }
 
 func familyOf(name string) string {
@@ -335,13 +340,13 @@ var (
 	listSepRe    = regexp.MustCompile(`^(?:[\s+,.\[\]()]|join)*$`)
 	argSepRe     = regexp.MustCompile(`^(?:[\s+.\[\]()]|join)*$`)
 	codeTokRe    = regexp.MustCompile(`[^\s;|&<>(){}\[\]'"=,+` + "`" + `]+`)
-	openPrimRe   = regexp.MustCompile(`(?i)\bopen\s*\(|read_text|read_bytes|readfile|file\.read|io\.read|file_get_contents|fopen|file\.open|\bpath\s*\(|readlines|slurp|getline|<\s*\$|get-content|\bopen\s+\w+\s*,|\bcat\b|createreadstream`)
+	openPrimRe   = regexp.MustCompile(`(?i)\bopen\s*\(|read_text|read_bytes|readfile|file\.read|io\.read|file_get_contents|fopen|file\.open|\bpath\s*\(|readlines|slurp|getline|<\s*\$|get-content|\bopen\s+\w+\s*,|\bcat\b|createreadstream|insert-file-contents|\bfind-file`)
 	decodePrimRe = regexp.MustCompile(`(?i)b64decode|base64|fromhex|unhexlify|\bchr\s*\(|\\x[0-9a-f]{2}|\\[0-7]{3}|atob\s*\(|buffer\.from|fromcharcode|\[::-1\]|\breverse|\bdecode\s*\(|\bpack\s*\(|unpack|rot13|codecs|\bord\s*\(|\\u00[0-9a-f]{2}|\\u\{[0-9a-f]+\}|\\N\{|\bsprintf\s*\(\s*['"]%c`)
 	// readPrimRe: primitives that read file contents (stricter than
 	// openPrimRe: Path(...) alone or listing into a command does not count).
-	readPrimRe = regexp.MustCompile(`(?i)\bopen\s*\(|read_text|read_bytes|readfile|file\.read|io\.read|file_get_contents|fopen|file\.open|readlines|slurp|getline|<\s*\$|\bopen\s+\w+\s*,|\bcat\b|createreadstream`)
+	readPrimRe = regexp.MustCompile(`(?i)\bopen\s*\(|read_text|read_bytes|readfile|file\.read|io\.read|file_get_contents|fopen|file\.open|readlines|slurp|getline|<\s*\$|\bopen\s+\w+\s*,|\bcat\b|createreadstream|insert-file-contents|\bfind-file`)
 	luaDecRe   = regexp.MustCompile(`\\\d{1,3}`)
-	execPrimRe = regexp.MustCompile(`(?i)\bexec\w*\s*\(|\beval\s*\(|\bsystem\s*\(|popen|subprocess|spawn|child_process|shell_exec|passthru|\bqx\s*[{(/]|` + "`" + `|\bos\.exec|\bruntime\.exec|%x\{`)
+	execPrimRe = regexp.MustCompile(`(?i)\bexec\w*\s*\(|\beval\s*\(|\bsystem\s*\(|popen|subprocess|spawn|child_process|shell_exec|passthru|\bqx\s*[{(/]|` + "`" + `|\bos\.exec|\bruntime\.exec|%x\{|shell-command|call-process|start-process|make-process|process-lines`)
 )
 
 type envAccessor struct {
@@ -378,6 +383,7 @@ var envDumpRes = []*regexp.Regexp{
 	regexp.MustCompile(`\bphpinfo\s*\(`),
 	regexp.MustCompile(`\bconst_get\s*\(?\s*:?\s*['"]?ENV\b`),
 	regexp.MustCompile(`\barray\s+get\s+(?:::)?env\b`),
+	regexp.MustCompile(`(?:^|[^\w-])(?:process|initial)-environment\b`), // Emacs Lisp
 }
 
 // envAccessorWords are accessor names; a concatenated literal spelling one
@@ -451,6 +457,9 @@ func (s *shellEval) scanCode(lang, code string) {
 	if strings.Contains(lower, "dir") || strings.Contains(lower, "walk") || strings.Contains(lower, "glob") {
 		if dirListRe.MatchString(code) && readPrimRe.MatchString(code) {
 			s.scanDirReads(lang, code)
+		}
+		if elispDirRe.MatchString(code) && readPrimRe.MatchString(code) {
+			s.scanElispDirReads(lang, code)
 		}
 	}
 	if hasExec {

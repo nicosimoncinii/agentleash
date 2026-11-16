@@ -71,10 +71,9 @@ func TestFileListFromFileReason(t *testing.T) {
 // interpolation from the process environment is asked when the policy has
 // secrets.env globs; --no-interpolate and listing flags are allowed.
 func TestComposeConfigDecisions(t *testing.T) {
-	// testPolicy's anchored config/secrets.yml makes the bare word "config"
-	// a directory holding secrets; leave it out to test compose alone.
+	// testPolicy has the anchored config/secrets.yml: the subcommand word
+	// "config" must not count as the directory holding it (#34).
 	p := testPolicy()
-	p.Secrets.Files = []string{".env", ".env.*"}
 	e := New(p)
 	cases := []tc{
 		{"docker compose config", Deny, RuleSecretFile},
@@ -112,6 +111,89 @@ func TestArgCandidatesAttachedValues(t *testing.T) {
 	for _, tt := range tests {
 		if got := argCandidates(escapeLit(tt.arg)); !containsStr(got, escapeLit(tt.want)) {
 			t.Errorf("argCandidates(%q) = %q; want it to contain %q", tt.arg, got, tt.want)
+		}
+	}
+}
+
+// Issue #34: a subcommand word of a known CLI is not a path, so the
+// directory-holding-secrets rule (config for config/secrets.yml) does not
+// apply to it; the same word in a path role is still denied.
+func TestSubcommandIsNotSecretDir(t *testing.T) {
+	e := New(testPolicy())
+	cases := []tc{
+		{"git config user.name x", Allow, ""},
+		{"git -C . config --get user.email", Allow, ""},
+		{"npm config list", Allow, ""},
+		{"pnpm config get registry", Allow, ""},
+		{"yarn config get npmRegistryServer", Allow, ""},
+		{"kubectl config view", Allow, ""},
+		{"kubectl --context dev config use-context prod", Allow, ""},
+		{"docker compose --env-file .env.example config --no-interpolate", Allow, ""},
+		{"kubectl config view --raw", Deny, RuleCredential},
+		{"cat config", Deny, RuleSecretFile},
+		{"tar czf x.tgz config", Deny, RuleSecretFile},
+		{"cp -r config /tmp", Deny, RuleSecretFile},
+		{"git -C config status", Deny, RuleSecretFile},
+		{"git --unknown-opt config status", Deny, RuleSecretFile},
+		{"docker compose -f config up", Deny, RuleSecretFile},
+		{"git diff --no-index config /tmp/x", Deny, RuleSecretFile},
+		{"git config/secrets.yml", Deny, RuleSecretFile},
+	}
+	for _, c := range cases {
+		v := e.Evaluate(shellReq(c.cmd))
+		if v.Decision != c.want || !strings.HasPrefix(v.Rule, c.rule) {
+			t.Errorf("Evaluate(%q) = %s (%s: %s), want %s %s", c.cmd, v.Decision, v.Rule, v.Reason, c.want, c.rule)
+		}
+	}
+	for _, c := range []tc{
+		{"kubectl config view", Allow, ""},
+		{"git config user.name x", Allow, ""},
+		{"docker compose -f config up", Deny, RuleSecretFile},
+		{"Get-Content config", Deny, RuleSecretFile},
+	} {
+		for _, sh := range []Shell{ShellPowerShell, ShellAuto} {
+			req := shellReq(c.cmd)
+			req.Shell = sh
+			v := e.Evaluate(req)
+			if v.Decision != c.want || !strings.HasPrefix(v.Rule, c.rule) {
+				t.Errorf("Evaluate(%s %q) = %s (%s: %s), want %s %s", sh, c.cmd, v.Decision, v.Rule, v.Reason, c.want, c.rule)
+			}
+		}
+	}
+}
+
+func TestVerbArgs(t *testing.T) {
+	args := func(ws ...string) []cmdArg {
+		out := make([]cmdArg, len(ws))
+		for i, w := range ws {
+			out[i] = litArg(w)
+		}
+		return out
+	}
+	tests := []struct {
+		name string
+		args []string
+		want []int
+	}{
+		{"git", []string{"config", "user.name", "x"}, []int{0}},
+		{"git", []string{"-C", "config", "status"}, []int{2}},
+		{"docker", []string{"--context", "dev", "compose", "-p", "x", "config"}, []int{2, 5}},
+		{"docker", []string{"cp", "config", "c:/x"}, []int{0}},
+		{"npm", []string{"config", "list"}, []int{0, 1}},
+		{"git", []string{"--weird", "config"}, nil},
+		{"git", []string{"./config"}, nil},
+		{"cat", []string{"config"}, nil},
+	}
+	for _, tt := range tests {
+		got := verbArgs(tt.name, args(tt.args...))
+		if len(got) != len(tt.want) {
+			t.Errorf("verbArgs(%s %q) = %v, want %v", tt.name, tt.args, got, tt.want)
+			continue
+		}
+		for _, i := range tt.want {
+			if !got[i] {
+				t.Errorf("verbArgs(%s %q) = %v, want %v", tt.name, tt.args, got, tt.want)
+			}
 		}
 	}
 }
