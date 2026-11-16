@@ -1,6 +1,11 @@
 package engine
 
-import "mvdan.cc/sh/v3/syntax"
+import (
+	"sync"
+	"sync/atomic"
+
+	"mvdan.cc/sh/v3/syntax"
+)
 
 // Resource limits. The engine must answer quickly for any input; anything
 // beyond these limits is denied as "too complex to analyse safely" (fail
@@ -16,10 +21,31 @@ const (
 
 const tooComplexReason = "the command is too complex to analyse safely (very long, deeply nested or too many pipeline stages), so it was blocked. Split it into smaller, simpler commands."
 
+// maxExpandBytes bounds the text that parameter expansion produces in one
+// request. Unlike literal text it is not bounded by maxCommandBytes:
+// `cat $A $A ...` repeats a long value and `A1=$A0$A0; A2=$A1$A1; ...`
+// doubles it at every step (out of memory within a 2 KB command, #35).
+const maxExpandBytes = 1 << 20
+
 // budget is a work counter shared by every evaluator of one request.
 type budget struct {
-	left int
-	hit  bool
+	left     int
+	hit      bool
+	expanded int // bytes produced by parameter expansion
+}
+
+// expand records n bytes produced by parameter expansion, charged at one
+// unit per KB, and reports whether work may continue. Beyond
+// maxExpandBytes the budget is exhausted (too-complex).
+func (b *budget) expand(n int) bool {
+	if b == nil {
+		return true
+	}
+	b.expanded += n
+	if b.expanded > maxExpandBytes {
+		b.left, b.hit = -1, true
+	}
+	return b.spend(n >> 10)
 }
 
 func newBudget() *budget { return &budget{left: workBudget} }
@@ -37,6 +63,30 @@ func (b *budget) spend(n int) bool {
 }
 
 func (b *budget) exhausted() bool { return b != nil && b.hit }
+
+// maxPureCache bounds each pureCache: policy patterns and request homes are
+// few, so a full cache only means a long-lived process saw many policies.
+const maxPureCache = 1024
+
+// pureCache memoises a pure function of its key across requests (policy
+// pattern forms, parsed patterns, the internal form of a home directory),
+// which were recomputed for every command or pipeline stage. Values are
+// shared, so callers must not modify them. Safe for concurrent use.
+type pureCache[K comparable, V any] struct {
+	m sync.Map
+	n atomic.Int64
+}
+
+func (c *pureCache[K, V]) get(k K, f func(K) V) V {
+	if v, ok := c.m.Load(k); ok {
+		return v.(V)
+	}
+	v := f(k)
+	if c.n.Add(1) <= maxPureCache {
+		c.m.Store(k, v)
+	}
+	return v
+}
 
 // tooComplex inspects a parsed script before analysis: nesting of
 // substitutions, number of pipeline stages and of nodes.

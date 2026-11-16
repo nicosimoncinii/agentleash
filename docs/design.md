@@ -654,8 +654,11 @@ producers are memoised, so nested substitutions are linear. Hard caps: 256 KB of
 text, 24 nested substitutions, 256 pipeline stages, 60 000 syntax nodes, 32 possible working
 directories (beyond that, relative paths match anywhere), 64 alternatives per word, 8 levels
 of nested shells, git aliases (8 values per name, 64 names, 32 expansions per call; each
-expansion and each generated command form is charged to the work budget). Exceeding any limit returns **deny** (`too-complex`): "too complex to analyse
-safely". Inputs up to 64 KB are answered in well under 100 ms.
+expansion and each generated command form is charged to the work budget), 1 MiB of text
+produced by parameter expansion per request (charged at one unit per KB; repeating or
+doubling a long value is not bounded by the command size). Exceeding any limit returns **deny** (`too-complex`): "too complex to analyse
+safely". Glob and pattern matching is linear in the length of a word, so inputs up to 64 KB
+are answered in well under 100 ms and a single 256 KB argument in about 150 ms at most.
 
 ## 8. Testing strategy
 

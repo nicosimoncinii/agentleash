@@ -84,12 +84,23 @@ func (s *shellEval) partsAlts(parts []syntax.WordPart, quoted bool, mode wordMod
 	alts := []string{""}
 	for _, p := range parts {
 		pa := s.partAlts(p, quoted, mode)
+		if _, ok := p.(*syntax.ParamExp); ok && !s.sec.work.expand(totalLen(pa)*len(alts)) {
+			return []string{string(dynAny)} // too-complex (limits.go)
+		}
 		alts = product(alts, pa)
 		if len(alts) > maxAlts {
 			return []string{string(dynAny)}
 		}
 	}
 	return alts
+}
+
+func totalLen(xs []string) int {
+	n := 0
+	for _, x := range xs {
+		n += len(x)
+	}
+	return n
 }
 
 func product(a, b []string) []string {

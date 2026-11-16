@@ -76,6 +76,20 @@ func (s *shellEval) child() *shellEval {
 
 var dotglobRe = regexp.MustCompile(`(?i)dotglob|glob_?dots|globignore`)
 
+// mayEnableDotglob reports whether dotglobRe can match src. Every
+// alternative contains "glob", whose letters have no non-ASCII case folds
+// (unlike k and s), so a case-insensitive ASCII search for "glob" is an
+// exact prefilter; it spares the slow case-insensitive regexp on long
+// commands (#35).
+func mayEnableDotglob(src string) bool {
+	for i := 0; i+4 <= len(src); i++ {
+		if src[i]|0x20 == 'g' && src[i+1]|0x20 == 'l' && src[i+2]|0x20 == 'o' && src[i+3]|0x20 == 'b' {
+			return dotglobRe.MatchString(src)
+		}
+	}
+	return false
+}
+
 // run analyses bash text and reports whether it parsed.
 func (s *shellEval) run(src string) bool {
 	if s.depth > maxDepth {
@@ -85,7 +99,7 @@ func (s *shellEval) run(src string) bool {
 	if !s.sec.work.spend(len(src)/64 + 1) {
 		return true
 	}
-	if dotglobRe.MatchString(src) {
+	if mayEnableDotglob(src) {
 		s.sec.dotglob = true
 	}
 	s.globstar = s.globstar || strings.Contains(src, "globstar")

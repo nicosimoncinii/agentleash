@@ -21,6 +21,11 @@ package engine
 // case-insensitive on every platform (NTFS and APFS are case-insensitive by
 // default; on Linux this only produces harmless false positives).
 
+import (
+	"strings"
+	"unicode/utf8"
+)
+
 const (
 	dynAny  = '\x00'
 	dynStar = '\x01'
@@ -204,48 +209,294 @@ func admitsPair(t, u *gtok, noDot bool) bool {
 // wildcard (* or ?), the dotfile rule applies unless dotglob is set.
 func segmentsIntersect(a, b []gtok, dotglob bool) bool {
 	dotRule := !dotglob && len(a) > 0 && a[0].shell && (a[0].kind == tStar || a[0].kind == tAny)
-	n, m := len(a), len(b)
-	memo := make(map[[3]int]bool)
-	var f func(i, j int, started bool) bool
-	f = func(i, j int, started bool) bool {
-		if i == n && j == m {
-			return true
+	if !hasStar(a) && !hasStar(b) {
+		// Without stars every token produces exactly one character:
+		// compare the two sides pairwise.
+		if len(a) != len(b) {
+			return false
 		}
-		st := 0
-		if started {
-			st = 1
-		}
-		key := [3]int{i, j, st}
-		if v, ok := memo[key]; ok {
-			return v
-		}
-		memo[key] = false
-		noDot := dotRule && !started
-		res := i < n && a[i].kind == tStar && f(i+1, j, started)
-		if !res && j < m && b[j].kind == tStar && f(i, j+1, started) {
-			res = true
-		}
-		if !res && i < n && j < m {
-			ai, bj := &a[i], &b[j]
-			switch {
-			case ai.kind == tStar && bj.kind == tStar:
-				// Both stars consume one shared ordinary character; only
-				// relevant for the "first character" state of the dot rule.
-				if !started {
-					res = f(i, j, true)
-				}
-			case ai.kind == tStar:
-				res = admitsPair(bj, nil, noDot) && f(i, j+1, true)
-			case bj.kind == tStar:
-				res = admitsPair(ai, nil, noDot) && f(i+1, j, true)
-			default:
-				res = admitsPair(ai, bj, noDot) && f(i+1, j+1, true)
+		for i := range a {
+			if !admitsPair(&a[i], &b[i], dotRule && i == 0) {
+				return false
 			}
 		}
-		memo[key] = res
-		return res
+		return true
 	}
-	return f(0, 0, false)
+	if allLiteral(a) {
+		// A literal argument (the usual case) is matched against b by the
+		// linear chunk algorithm; the dot rule cannot apply to it.
+		return literalGlobMatch(len(a), func(i int) rune { return a[i].ch }, b)
+	}
+	var buf [isectBuf]bool
+	x := newIsect(b, dotRule, buf[:])
+	for i := range a {
+		switch x.step(&a[i]) {
+		case isectDead:
+			return false
+		case isectAccept:
+			return true
+		}
+	}
+	return x.done()
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+func allLiteral(ts []gtok) bool {
+	for i := range ts {
+		if ts[i].kind != tLit {
+			return false
+		}
+	}
+	return true
+}
+
+// literalGlobMatch reports whether the literal text of n runes (at returns
+// the i-th) is accepted by the glob b, in time linear in n for a fixed b.
+// b is split at its stars into star-free chunks, each of which matches a
+// fixed number of runes: the first chunk must match at the start, the last
+// at the end, and the others are placed leftmost-first in between (the
+// leftmost occurrence leaves the most room for the rest, so this is exact).
+func literalGlobMatch(n int, at func(int) rune, b []gtok) bool {
+	chunkAt := func(p int, c []gtok) bool {
+		for k := range c {
+			lit := gtok{kind: tLit, ch: at(p + k)}
+			if !admitsPair(&lit, &c[k], false) {
+				return false
+			}
+		}
+		return true
+	}
+	firstStar, lastStar := -1, -1
+	for k := range b {
+		if b[k].kind == tStar {
+			if firstStar < 0 {
+				firstStar = k
+			}
+			lastStar = k
+		}
+	}
+	if firstStar < 0 {
+		return len(b) == n && chunkAt(0, b)
+	}
+	first, last := b[:firstStar], b[lastStar+1:]
+	lo, hi := len(first), n-len(last)
+	if lo > hi || !chunkAt(0, first) || !chunkAt(hi, last) {
+		return false
+	}
+	start := firstStar + 1
+	for k := start; k <= lastStar; k++ {
+		if b[k].kind != tStar {
+			continue
+		}
+		c := b[start:k]
+		start = k + 1
+		found := false
+		for ; lo+len(c) <= hi; lo++ {
+			if chunkAt(lo, c) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+		lo += len(c)
+	}
+	return true
+}
+
+// flatGlob is a compiled flat pattern (globMatchString).
+type flatGlob struct {
+	toks []gtok
+	// chunks are the UTF-8 texts between the stars when the pattern holds
+	// only literals and stars (nil otherwise); see byteGlobMatch.
+	chunks []string
+}
+
+var flatGlobCache pureCache[string, *flatGlob]
+
+func compileFlatGlob(pattern string) *flatGlob {
+	g := &flatGlob{toks: parseFlat(pattern, true)}
+	g.chunks = starChunks(g.toks)
+	return g
+}
+
+// starChunks returns the UTF-8 texts between the stars of a glob made only
+// of literals and stars, for byteGlobMatch; nil for any other glob. '?' and
+// classes need rune-wise matching, and so does U+FFFD: an invalid byte of
+// the subject decodes to U+FFFD.
+func starChunks(toks []gtok) []string {
+	var chunks []string
+	var cur []byte
+	for _, t := range toks {
+		switch {
+		case t.kind == tStar:
+			chunks = append(chunks, string(cur))
+			cur = cur[:0]
+		case t.kind != tLit || t.ch == utf8.RuneError:
+			return nil
+		default:
+			cur = utf8.AppendRune(cur, t.ch)
+		}
+	}
+	return append(chunks, string(cur))
+}
+
+// byteGlobMatch is literalGlobMatch on the bytes of s, for a glob made only
+// of literals and stars, split into chunks at its stars. It is exact on
+// runes: the UTF-8 encoding of a literal chunk can only occur in s at a
+// rune boundary, because it starts with a byte that never continues a rune.
+func byteGlobMatch(s string, chunks []string) bool {
+	if len(chunks) == 1 {
+		return s == chunks[0]
+	}
+	first, last := chunks[0], chunks[len(chunks)-1]
+	if len(first)+len(last) > len(s) || !strings.HasPrefix(s, first) || !strings.HasSuffix(s, last) {
+		return false
+	}
+	lo, hi := len(first), len(s)-len(last)
+	for _, c := range chunks[1 : len(chunks)-1] {
+		i := strings.Index(s[lo:hi], c)
+		if i < 0 {
+			return false
+		}
+		lo += i + len(c)
+	}
+	return true
+}
+
+// isect intersects an argument token stream a (fed one token at a time)
+// with a fixed token list b. It is a forward simulation of the automaton
+// whose states are (j, started): j tokens of b consumed, started once some
+// character has been produced (the dotfile rule only constrains the first
+// one). Each argument token costs O(len(b)), so long arguments are linear
+// (the former recursive version memoised O(len(a)*len(b)) states in a map
+// and recursed len(a) deep).
+//
+// Transitions, for the argument token ai and b[j]:
+//   - ai is *: skip it (next token, same state); or let it produce b[j]
+//     when b[j] is a single-character token (same token, j+1, started).
+//   - b[j] is *: skip it (j+1, same token); or let it produce ai when ai is
+//     a single-character token (next token, j, started).
+//   - both *: they may produce one shared character (started).
+//   - neither: they must produce the same character (next token, j+1).
+//
+// The input is accepted when the end of a is reached in state (len(b), *).
+type isect struct {
+	b        []gtok
+	dotRule  bool
+	cur, nxt []bool // index 2*j + started
+	// starTail[j] reports that b[j:] is non-empty and holds only stars, so
+	// any rest of the argument is accepted from (j, started) unless the dot
+	// rule applies.
+	starTail []bool
+}
+
+type isectResult uint8
+
+const (
+	isectAlive isectResult = iota
+	isectDead
+	isectAccept
+)
+
+// isectBuf is the scratch size that keeps the matcher off the heap for
+// patterns of up to 20 tokens.
+const isectBuf = 5 * 21
+
+// newIsect prepares a matcher for b. buf is zeroed scratch space (usually
+// a stack array of the caller); a larger one is allocated when it is too
+// small.
+func newIsect(b []gtok, dotRule bool, buf []bool) isect {
+	m := len(b)
+	if len(buf) < 5*(m+1) {
+		buf = make([]bool, 5*(m+1))
+	}
+	x := isect{b: b, dotRule: dotRule, cur: buf[:2*(m+1)], nxt: buf[2*(m+1) : 4*(m+1)], starTail: buf[4*(m+1) : 5*(m+1)]}
+	for j := m - 1; j >= 0 && b[j].kind == tStar; j-- {
+		x.starTail[j] = true
+	}
+	x.cur[0] = true
+	return x
+}
+
+// closeRow adds the states reachable without consuming the argument token
+// ai (nil at the end of the argument). Transitions only go from j to j or
+// j+1 and from not started to started, so one ascending pass suffices.
+func (x *isect) closeRow(ai *gtok) {
+	b, cur, m := x.b, x.cur, len(x.b)
+	aStar := ai != nil && ai.kind == tStar
+	for j := 0; j <= m; j++ {
+		for st := 0; st < 2; st++ {
+			if !cur[2*j+st] || j == m {
+				continue
+			}
+			if b[j].kind == tStar {
+				cur[2*(j+1)+st] = true
+				if aStar && st == 0 {
+					cur[2*j+1] = true
+				}
+			} else if aStar && admitsPair(&b[j], nil, x.dotRule && st == 0) {
+				cur[2*(j+1)+1] = true
+			}
+		}
+	}
+}
+
+// step consumes the argument token ai.
+func (x *isect) step(ai *gtok) isectResult {
+	x.closeRow(ai)
+	b, cur, nxt, m := x.b, x.cur, x.nxt, len(x.b)
+	clear(nxt)
+	alive := false
+	for j := 0; j <= m; j++ {
+		for st := 0; st < 2; st++ {
+			if !cur[2*j+st] {
+				continue
+			}
+			noDot := x.dotRule && st == 0
+			if x.starTail[j] && !noDot {
+				// The rest of b is stars: they absorb the rest of a.
+				return isectAccept
+			}
+			switch {
+			case ai.kind == tStar:
+				nxt[2*j+st] = true
+				alive = true
+			case j == m:
+			case b[j].kind == tStar:
+				if admitsPair(ai, nil, noDot) {
+					nxt[2*j+1] = true
+					alive = true
+				}
+			default:
+				if admitsPair(ai, &b[j], noDot) {
+					nxt[2*(j+1)+1] = true
+					alive = true
+				}
+			}
+		}
+	}
+	x.cur, x.nxt = nxt, cur
+	if !alive {
+		return isectDead
+	}
+	return isectAlive
+}
+
+// done reports whether the argument, now fully consumed, is accepted.
+func (x *isect) done() bool {
+	x.closeRow(nil)
+	m := len(x.b)
+	return x.cur[2*m] || x.cur[2*m+1]
 }
 
 // segmentsMatch is segmentsIntersect with one refinement for the case where
@@ -303,18 +554,45 @@ func instantiate(ts []gtok, fill rune) []gtok {
 type gseg struct {
 	globstar bool // "**": zero or more segments
 	toks     []gtok
+	// Precomputed for pathsIntersect, which compares every segment of a
+	// (possibly very long) argument with every secret pattern.
+	literal bool     // only literal tokens (lit is their text)
+	lit     string   // UTF-8 text of a literal segment
+	chunks  []string // texts between the stars of a literals-and-stars segment
 }
 
-func (s gseg) isLiteral() bool {
-	if s.globstar {
-		return false
-	}
-	for _, t := range s.toks {
-		if t.kind != tLit {
-			return false
+func newSeg(part string) gseg {
+	s := gseg{toks: parseSegment(part)}
+	if allLiteral(s.toks) {
+		s.literal = true
+		if strings.IndexByte(part, '\\') < 0 && utf8.ValidString(part) {
+			s.lit = part
+		} else {
+			b := make([]byte, 0, len(s.toks))
+			for _, t := range s.toks {
+				b = utf8.AppendRune(b, t.ch)
+			}
+			s.lit = string(b)
 		}
+	} else {
+		s.chunks = starChunks(s.toks)
 	}
-	return true
+	return s
+}
+
+func (s gseg) isLiteral() bool { return !s.globstar && s.literal }
+
+// segMatch is segmentsMatch on parsed segments, with fast paths for a
+// literal argument segment (the dot rule and the "crossing" refinement only
+// concern an argument with wildcards).
+func segMatch(a, b *gseg, dotglob bool) bool {
+	switch {
+	case a.literal && b.literal:
+		return a.lit == b.lit
+	case a.literal && b.chunks != nil:
+		return byteGlobMatch(a.lit, b.chunks)
+	}
+	return segmentsMatch(a.toks, b.toks, dotglob)
 }
 
 // gpath is a parsed, cleaned, absolute (or "**"-prefixed) path pattern.
@@ -343,7 +621,7 @@ func parsePath(clean string) gpath {
 			segs = append(segs, gseg{globstar: true})
 			continue
 		}
-		segs = append(segs, gseg{toks: parseSegment(part)})
+		segs = append(segs, newSeg(part))
 	}
 	return gpath{raw: clean, segs: segs}
 }
@@ -371,45 +649,95 @@ func splitOn(s string, sep byte) []string {
 
 // pathsIntersect reports whether some concrete path is accepted by both a
 // (argument side) and b (secret side).
+//
+// It is the same forward simulation as isect, one level up: "**" plays the
+// role of '*' and two ordinary segments advance together when segmentsMatch
+// accepts them. States are j (segments of b consumed); each segment of a
+// costs O(len(b)) segment comparisons, so long paths stay linear.
+//
+//   - a[i] is "**": skip it (i+1, j); or let it absorb b[j] (i, j+1).
+//   - b[j] is "**": skip it (i, j+1); or let it absorb a[i] (i+1, j).
+//   - neither: (i+1, j+1) when the two segments match.
 func pathsIntersect(a, b gpath, dotglob bool) bool {
 	n, m := len(a.segs), len(b.segs)
-	memo := make(map[[2]int]int8)
-	var g func(i, j int) bool
-	g = func(i, j int) bool {
-		if i == n && j == m {
-			return true
+	cur, nxt := make([]bool, m+1), make([]bool, m+1)
+	cur[0] = true
+	for i := 0; ; i++ {
+		// Moves within row i (j -> j+1).
+		aStar := i < n && a.segs[i].globstar
+		for j := 0; j < m; j++ {
+			if cur[j] && (aStar || b.segs[j].globstar) {
+				cur[j+1] = true
+			}
 		}
-		key := [2]int{i, j}
-		if v, ok := memo[key]; ok {
-			return v == 1
+		if i == n {
+			return cur[m]
 		}
-		memo[key] = 0
-		res := false
-		if i < n && a.segs[i].globstar {
-			res = g(i+1, j) || (j < m && g(i, j+1))
+		clear(nxt)
+		alive := false
+		for j := 0; j <= m; j++ {
+			if !cur[j] {
+				continue
+			}
+			switch {
+			case aStar, j < m && b.segs[j].globstar:
+				nxt[j] = true
+				alive = true
+			case j < m && segMatch(&a.segs[i], &b.segs[j], dotglob):
+				nxt[j+1] = true
+				alive = true
+			}
 		}
-		if !res && j < m && b.segs[j].globstar {
-			res = g(i, j+1) || (i < n && g(i+1, j))
+		if !alive {
+			return false
 		}
-		if !res && i < n && j < m && !a.segs[i].globstar && !b.segs[j].globstar {
-			res = segmentsMatch(a.segs[i].toks, b.segs[j].toks, dotglob) && g(i+1, j+1)
-		}
-		if res {
-			memo[key] = 1
-		}
-		return res
+		cur, nxt = nxt, cur
 	}
-	return g(0, 0)
 }
 
 // globMatchString matches a literal subject against a glob pattern where '*'
 // matches any run of characters including '/' and spaces (command patterns,
 // env names). The subject may contain dynAny/dynStar runs, which match
 // anything; in that case the result means "could match".
+//
+// The subject is streamed (not tokenised into a slice): it can be as long as
+// the whole command, and is matched against every pattern form.
 func globMatchString(pattern, subject string) bool {
-	p := parseFlat(pattern, true)
-	s := parseFlat(subject, false)
-	return segmentsIntersect(s, p, true)
+	g := flatGlobCache.get(pattern, compileFlatGlob)
+	p := g.toks
+	if strings.IndexByte(subject, dynAny) < 0 && strings.IndexByte(subject, dynStar) < 0 {
+		if g.chunks != nil {
+			return byteGlobMatch(subject, g.chunks)
+		}
+		if isASCII(subject) {
+			return literalGlobMatch(len(subject), func(i int) rune { return rune(subject[i]) }, p)
+		}
+		rs := []rune(subject)
+		return literalGlobMatch(len(rs), func(i int) rune { return rs[i] }, p)
+	}
+	var buf [isectBuf]bool
+	x := newIsect(p, false, buf[:])
+	star := gtok{kind: tStar}
+	lit := gtok{kind: tLit}
+	prevStar := false
+	for _, r := range subject {
+		t := &lit
+		if r == dynAny || r == dynStar {
+			if prevStar {
+				continue // a run of dynamic markers is one star
+			}
+			t, prevStar = &star, true
+		} else {
+			lit.ch, prevStar = r, false
+		}
+		switch x.step(t) {
+		case isectDead:
+			return false
+		case isectAccept:
+			return true
+		}
+	}
+	return x.done()
 }
 
 // parseFlat tokenises a flat (non-path) glob. When glob is false only the

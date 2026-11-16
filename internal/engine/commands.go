@@ -311,8 +311,12 @@ type cmdCtx struct {
 	work *budget
 }
 
+var homeIntCache pureCache[string, string]
+
 func plainCtx(home string) cmdCtx {
-	return cmdCtx{home: home, homeInt: normalizeAbs(home)}
+	// Computed once per home, not once per command (PowerShell matches
+	// every pipeline stage through commandForms).
+	return cmdCtx{home: home, homeInt: homeIntCache.get(home, normalizeAbs)}
 }
 
 func (s *shellEval) cmdCtx() cmdCtx {
@@ -783,8 +787,15 @@ func (ctx cmdCtx) giveUp() {
 	}
 }
 
-// patternForms normalises a policy pattern for one stage.
+var patternFormsCache pureCache[[2]string, []string]
+
+// patternForms normalises a policy pattern for one stage. The result is
+// shared: callers must not modify it.
 func patternForms(p, home string) []string {
+	return patternFormsCache.get([2]string{p, home}, func(k [2]string) []string { return patternFormsUncached(k[0], k[1]) })
+}
+
+func patternFormsUncached(p, home string) []string {
 	tokens := normalizeTokens(strings.Fields(p))
 	if len(tokens) == 0 {
 		return nil
@@ -1220,6 +1231,9 @@ func downloadTargets(argv []string) []string {
 // file downloaded then run in the same script (`curl -o f URL && sh f` is
 // `curl ... | sh`).
 func (s *shellEval) commandPrepass(root syntax.Node) {
+	if !prepassNeeded(root) {
+		return
+	}
 	type runner struct {
 		key   string
 		forms []string
@@ -1320,6 +1334,71 @@ func (s *shellEval) commandPrepass(root syntax.Node) {
 	for _, stages := range indirect {
 		applyPatterns(s.e.policy, s.c, s.sec.work, s.req.Home, nil, stages)
 	}
+}
+
+// prepassNeeded reports whether commandPrepass can have any effect on root,
+// without evaluating words (the prepass evaluates every word of every
+// call, which made long scripts noticeably slower, #35). The prepass only
+// acts on a process substitution or on a command, at some wrapper level,
+// named git, curl or wget; every wrapper level starts at an argument word.
+// So it can be skipped when every argument of every call is plain text
+// (literals and quotes, without expansions, $'...', braces or ~) that,
+// lower-cased and without backslashes, contains none of those names:
+// evaluating such a word only removes quotes and escaping backslashes, and
+// cmdBase only shortens a name and lower-cases it like strings.ToLower.
+func prepassNeeded(root syntax.Node) bool {
+	needed := false
+	var b strings.Builder
+	syntax.Walk(root, func(n syntax.Node) bool {
+		if needed {
+			return false
+		}
+		call, ok := n.(*syntax.CallExpr)
+		if !ok {
+			return true
+		}
+		for _, w := range call.Args {
+			b.Reset()
+			if !plainWordText(w.Parts, &b) {
+				needed = true
+				return false
+			}
+			t := strings.ToLower(strings.ReplaceAll(b.String(), `\`, ""))
+			if strings.Contains(t, "git") || strings.Contains(t, "curl") || strings.Contains(t, "wget") {
+				needed = true
+				return false
+			}
+		}
+		return true
+	})
+	return needed
+}
+
+// plainWordText appends the raw text of word parts that evaluate to
+// themselves up to quotes and backslashes; it reports false for any other
+// part.
+func plainWordText(parts []syntax.WordPart, b *strings.Builder) bool {
+	for _, p := range parts {
+		switch x := p.(type) {
+		case *syntax.Lit:
+			if strings.ContainsAny(x.Value, "{~") {
+				return false // brace expansion, tilde expansion
+			}
+			b.WriteString(x.Value)
+		case *syntax.SglQuoted:
+			if x.Dollar {
+				return false // $'\x67it'
+			}
+			b.WriteString(x.Value)
+		case *syntax.DblQuoted:
+			if x.Dollar || !plainWordText(x.Parts, b) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // unwrapLevels returns argv and the argvs of the commands it wraps (sudo,

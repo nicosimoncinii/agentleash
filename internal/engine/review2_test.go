@@ -12,9 +12,15 @@ func nestedSubst(levels int) string {
 	return strings.Repeat("echo $(", levels) + "x" + strings.Repeat(")", levels)
 }
 
-// TestPerformanceWorstCases: every input up to 64 KB must be answered fast,
-// and anything beyond the limits must be denied, never allowed.
-func TestPerformanceWorstCases(t *testing.T) {
+type perfCase struct {
+	name  string
+	cmd   string
+	shell Shell
+}
+
+// performanceWorstCases are the inputs of TestPerformanceWorstCases (and of
+// BenchmarkWorstCases).
+func performanceWorstCases() []perfCase {
 	var cds strings.Builder
 	for i := 0; i < 2000; i++ {
 		cds.WriteString("cd d")
@@ -22,11 +28,7 @@ func TestPerformanceWorstCases(t *testing.T) {
 		cds.WriteString("; ")
 	}
 	cds.WriteString("cat foo")
-	cases := []struct {
-		name  string
-		cmd   string
-		shell Shell
-	}{
+	return []perfCase{
 		{"nested subst 14", nestedSubst(14), ShellBash},
 		{"nested subst 200", nestedSubst(200), ShellBash},
 		{"nested subst 200 auto", nestedSubst(200), ShellAuto},
@@ -54,8 +56,13 @@ func TestPerformanceWorstCases(t *testing.T) {
 			return b.String()
 		}(), ShellBash},
 	}
+}
+
+// TestPerformanceWorstCases: every input up to 64 KB must be answered fast,
+// and anything beyond the limits must be denied, never allowed.
+func TestPerformanceWorstCases(t *testing.T) {
 	e := New(testPolicy())
-	for _, c := range cases {
+	for _, c := range performanceWorstCases() {
 		req := shellReq(c.cmd)
 		req.Shell = c.shell
 		start := time.Now()
