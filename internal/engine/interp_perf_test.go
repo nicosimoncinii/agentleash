@@ -61,10 +61,14 @@ func TestInterpPerformanceWorstCases(t *testing.T) {
 			req.Shell = sh
 			base := shellReq(plainCmd)
 			base.Shell = sh
-			baseline, _ := bestOf(e, base, 1)
-			el, v := bestOf(e, req, 1)
+			baseline, _ := bestOf(e, base, 3)
+			el, v := bestOf(e, req, 3)
 			t.Logf("%s: %v (baseline %v) %s %s", name, el, baseline, v.Decision, v.Rule)
-			if limit := 2*baseline + 150*time.Millisecond*scale; el > limit {
+			// The absolute floor keeps the test stable on loaded CI runners now
+			// that the baseline is fast (#35); the quadratic scans it guards
+			// against took several seconds at this size even without -race.
+			limit := max(2*baseline+150*time.Millisecond*scale, 500*time.Millisecond*scale)
+			if el > limit {
 				t.Errorf("%s: took %v, more than %v (baseline %v)", name, el, limit, baseline)
 			}
 		}
