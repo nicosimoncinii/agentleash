@@ -10,8 +10,9 @@
 
 </div>
 
-> [!WARNING]
-> **Pre-release.** agentleash is under active development and not ready for use yet.
+> [!NOTE]
+> **Early release.** agentleash works today with Claude Code and Codex, but it is young:
+> read [Honest limits](#honest-limits) before relying on it.
 
 ## The problem
 
@@ -34,8 +35,8 @@ Teams using more than one agent maintain several configs that drift apart.
   `cat .en*`, `base64 .env`, `printenv`, `echo $AWS_SECRET_ACCESS_KEY`...
 - **Fails closed**: when in doubt, it blocks and tells the agent why.
 - **Proven by a public attack corpus**: every bypass attempt in [`testdata/attacks`](testdata/attacks)
-  (190+ cases, written by an independent red team) must be blocked, every command in
-  [`testdata/benign`](testdata/benign) (70+ real agent commands) must pass. CI runs it on
+  (430+ cases, written by red-team rounds) must be blocked, every command in
+  [`testdata/benign`](testdata/benign) (270+ real agent commands) must pass. CI runs it on
   Linux, macOS and Windows on every push, plus end-to-end tests against the built binary.
 
 ```yaml
@@ -54,18 +55,26 @@ commands:
 
 | Agent | Native rules | Runtime hook | Status |
 |---|---|---|---|
-| Claude Code | `permissions.deny` | `PreToolUse` | 🚧 v0.1 |
-| Codex CLI | `shell_environment_policy` (env filtering) | `PreToolUse` | 🚧 v0.1 |
+| Claude Code | `permissions.deny` | `PreToolUse` | ✅ |
+| Codex CLI | `shell_environment_policy` (env filtering) | `PreToolUse` | ✅ |
 | Gemini CLI | | | 🗺️ planned |
 | Cursor | | | 🗺️ planned |
 
 ## Install
 
+Download the archive for your platform from the
+[latest release](https://github.com/nicosimoncinii/agentleash/releases/latest)
+(Linux, macOS and Windows, amd64 and arm64), check it against `checksums.txt`, and put the
+`agentleash` binary on your `PATH`.
+
+Or build from source (Go 1.27+):
+
 ```bash
 go install github.com/nicosimoncinii/agentleash/cmd/agentleash@latest
 ```
 
-Prebuilt binaries will be published on the Releases page.
+`agentleash apply` writes the binary's absolute path into the agent hooks, so re-run it after
+moving or upgrading the binary.
 
 ## Usage
 
@@ -93,7 +102,7 @@ boundary*. agentleash raises the bar a lot, but it is **not a sandbox**: a deter
 process can still find ways around it. Combine it with OS-level sandboxing for untrusted
 work, and keep real secrets out of your repository.
 
-Known gaps in v0.1 (details in [docs/design.md](docs/design.md) §7.7):
+Known gaps (details in [docs/design.md](docs/design.md) §7.7):
 
 - **Write-then-execute across calls**: a script, Makefile or `npm run` target written earlier
   (or with the Write tool) is checked by path, not by its contents. A script written and run
@@ -112,7 +121,9 @@ Found a bypass? Please report it privately, see [SECURITY.md](SECURITY.md).
 
 ## Roadmap
 
-- [ ] v0.1: Claude Code + Codex, secrets + dangerous commands, attack corpus
+- [x] v0.1: Claude Code + Codex, secrets + dangerous commands, attack corpus
+- [x] v0.2: red-team hardening (interpreters, runners, write-then-run, `rm`/`git` variants)
+- [ ] Self-protection of agent and agentleash config ([#17](https://github.com/nicosimoncinii/agentleash/issues/17))
 - [ ] Gemini CLI and Cursor adapters
 - [ ] Audit log of blocked actions
 - [ ] Secret placeholders (agent sees `{{STRIPE_KEY}}`, real value injected at run time)
