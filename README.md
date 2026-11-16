@@ -34,6 +34,8 @@ Teams using more than one agent maintain several configs that drift apart.
 - **Understands the shell**: pipes, `&&`, `$(...)`, backticks, `sh -c "..."`, globs like
   `cat .en*`, `base64 .env`, `printenv`, `echo $AWS_SECRET_ACCESS_KEY`...
 - **Fails closed**: when in doubt, it blocks and tells the agent why.
+  Piping a download straight into a shell (`curl … | sh`) is always blocked, because the
+  script cannot be checked: download it to a file first (that form asks for confirmation).
 - **Proven by a public attack corpus**: every bypass attempt in [`testdata/attacks`](testdata/attacks)
   (430+ cases, written by red-team rounds) must be blocked, every command in
   [`testdata/benign`](testdata/benign) (270+ real agent commands) must pass. CI runs it on
@@ -48,7 +50,7 @@ secrets:
   env: ["*_KEY", "*_SECRET*", "*_TOKEN", "*PASSWORD*"]
 commands:
   deny: ["rm -rf /", "git push --force*"]
-  ask:  ["curl * | sh"]
+  ask:  ["git reset --hard*", "terraform apply*"]
 ```
 
 ## Supported agents
