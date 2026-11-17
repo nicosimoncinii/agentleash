@@ -71,64 +71,11 @@ func isOurHandler(v any) bool {
 // non-nil, installs group where the first removed agentleash group was (or at the end).
 // data == nil means the file does not exist. A nil result means the file should be deleted.
 func mergeHooks(data []byte, group *object) ([]byte, error) {
-	root := newObject()
-	if data != nil {
-		v, err := decodeOrderedJSON(data)
-		if err != nil {
-			return nil, fmt.Errorf("parse hooks.json: %w", err)
-		}
-		var ok bool
-		if root, ok = v.(*object); !ok {
-			return nil, errors.New("hooks.json: top level is not a JSON object")
-		}
+	root, hooks, pre, err := agrLoadHooksDoc(data)
+	if err != nil {
+		return nil, err
 	}
-	hooks := newObject()
-	if v, ok := root.vals["hooks"]; ok {
-		if hooks, ok = v.(*object); !ok {
-			return nil, errors.New(`hooks.json: "hooks" is not an object`)
-		}
-	}
-	var pre []any
-	if v, ok := hooks.vals["PreToolUse"]; ok {
-		if pre, ok = v.([]any); !ok {
-			return nil, errors.New(`hooks.json: "hooks.PreToolUse" is not an array`)
-		}
-	}
-
-	removed := false
-	insertAt := -1
-	kept := make([]any, 0, len(pre)+1)
-	for _, g := range pre {
-		gobj, ok := g.(*object)
-		if !ok {
-			kept = append(kept, g)
-			continue
-		}
-		handlers, ok := gobj.vals["hooks"].([]any)
-		if !ok {
-			kept = append(kept, g)
-			continue
-		}
-		var rest []any
-		for _, h := range handlers {
-			if !isOurHandler(h) {
-				rest = append(rest, h)
-			}
-		}
-		if len(rest) == len(handlers) {
-			kept = append(kept, g)
-			continue
-		}
-		removed = true
-		if len(rest) == 0 {
-			if insertAt < 0 {
-				insertAt = len(kept)
-			}
-			continue
-		}
-		gobj.set("hooks", rest)
-		kept = append(kept, gobj)
-	}
+	kept, removed, insertAt := agrStripOurGroups(pre)
 
 	switch {
 	case group != nil && insertAt >= 0:
@@ -158,6 +105,81 @@ func mergeHooks(data []byte, group *object) ([]byte, error) {
 	}
 	buf.WriteByte('\n')
 	return buf.Bytes(), nil
+}
+
+// agrLoadHooksDoc decodes a hooks.json document (nil data means an empty one) and returns
+// its root object, its "hooks" object and its "hooks.PreToolUse" array, each created empty
+// when absent. It fails when any of them has the wrong JSON type.
+func agrLoadHooksDoc(data []byte) (root, hooks *object, pre []any, err error) {
+	root = newObject()
+	if data != nil {
+		v, err := decodeOrderedJSON(data)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("parse hooks.json: %w", err)
+		}
+		var ok bool
+		if root, ok = v.(*object); !ok {
+			return nil, nil, nil, errors.New("hooks.json: top level is not a JSON object")
+		}
+	}
+	hooks = newObject()
+	if v, ok := root.vals["hooks"]; ok {
+		if hooks, ok = v.(*object); !ok {
+			return nil, nil, nil, errors.New(`hooks.json: "hooks" is not an object`)
+		}
+	}
+	if v, ok := hooks.vals["PreToolUse"]; ok {
+		if pre, ok = v.([]any); !ok {
+			return nil, nil, nil, errors.New(`hooks.json: "hooks.PreToolUse" is not an array`)
+		}
+	}
+	return root, hooks, pre, nil
+}
+
+// agrStripOurGroups removes every agentleash handler from the PreToolUse groups in pre.
+// It returns the groups to keep, whether anything was removed, and the index in kept
+// of the first group that held only agentleash handlers (-1 if none).
+func agrStripOurGroups(pre []any) (kept []any, removed bool, insertAt int) {
+	insertAt = -1
+	kept = make([]any, 0, len(pre)+1)
+	for _, g := range pre {
+		gobj, ok := g.(*object)
+		if !ok {
+			kept = append(kept, g)
+			continue
+		}
+		handlers, ok := gobj.vals["hooks"].([]any)
+		if !ok {
+			kept = append(kept, g)
+			continue
+		}
+		rest := agrForeignHandlers(handlers)
+		if len(rest) == len(handlers) {
+			kept = append(kept, g)
+			continue
+		}
+		removed = true
+		if len(rest) == 0 {
+			if insertAt < 0 {
+				insertAt = len(kept)
+			}
+			continue
+		}
+		gobj.set("hooks", rest)
+		kept = append(kept, gobj)
+	}
+	return kept, removed, insertAt
+}
+
+// agrForeignHandlers returns the handlers that are not agentleash's, in order (nil if none).
+func agrForeignHandlers(handlers []any) []any {
+	var rest []any
+	for _, h := range handlers {
+		if !isOurHandler(h) {
+			rest = append(rest, h)
+		}
+	}
+	return rest
 }
 
 // object is a JSON object that remembers key order, so rewriting hooks.json keeps the

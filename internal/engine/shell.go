@@ -131,95 +131,20 @@ func (s *shellEval) run(src string) bool {
 
 // collect records variable assignments and possible working directories.
 func (s *shellEval) collect(root syntax.Node) {
-	var cdTargets []*syntax.Word
-	var links [][2]*syntax.Word
+	var acc inrCollectAcc
 	s.walk(root, func(n syntax.Node) bool {
 		switch x := n.(type) {
 		case *syntax.Assign:
-			if x.Name == nil {
-				return true
-			}
-			name := x.Name.Value
-			switch {
-			case x.Append || x.Array != nil || x.Index != nil:
-				s.vars[name] = append(s.vars[name], varValue{})
-				if x.Array != nil {
-					for _, el := range x.Array.Elems {
-						if el.Value != nil {
-							s.vars[name] = append(s.vars[name], varValue{word: el.Value})
-						}
-					}
-				}
-			case x.Value != nil:
-				s.vars[name] = append(s.vars[name], varValue{word: x.Value})
-			case x.Naked:
-				// `export NAME` / `local NAME`: value comes from elsewhere.
-				if _, ok := s.vars[name]; !ok {
-					s.vars[name] = []varValue{{}}
-				}
-			default:
-				s.vars[name] = append(s.vars[name], varValue{word: &syntax.Word{}})
-			}
+			s.inrCollectAssign(x)
 		case *syntax.ForClause:
-			if wi, ok := x.Loop.(*syntax.WordIter); ok && wi.Name != nil {
-				if wi.InPos.IsValid() || len(wi.Items) > 0 {
-					for _, it := range wi.Items {
-						s.vars[wi.Name.Value] = append(s.vars[wi.Name.Value], varValue{word: it, pattern: true})
-					}
-				} else {
-					s.vars[wi.Name.Value] = append(s.vars[wi.Name.Value], varValue{})
-				}
-			}
+			s.inrCollectFor(x)
 		case *syntax.CallExpr:
-			if len(x.Args) == 0 {
-				return true
-			}
-			name, _ := staticText(s.wordAltsNoVars(x.Args[0]))
-			name = cmdBase(name)
-			switch name {
-			case "cd", "pushd":
-				if len(x.Args) == 1 {
-					cdTargets = append(cdTargets, &syntax.Word{Parts: []syntax.WordPart{&syntax.Lit{Value: "~"}}})
-				}
-				for _, a := range x.Args[1:] {
-					t, ok := staticText(s.wordAltsNoVars(a))
-					if ok && strings.HasPrefix(t, "-") && t != "-" {
-						continue
-					}
-					cdTargets = append(cdTargets, a)
-				}
-			case "ln", "cp", "mount", "bindfs":
-				links = append(links, s.linkPairs(name, x.Args[1:])...)
-			case "read", "mapfile", "readarray", "getopts", "printf", "select":
-				for _, a := range x.Args[1:] {
-					if t, ok := staticText(s.wordAltsNoVars(a)); ok && isIdent(t) {
-						s.vars[t] = append(s.vars[t], varValue{})
-					}
-				}
-			}
-			for i, a := range x.Args[1:] {
-				t, ok := staticText(s.wordAltsNoVars(a))
-				if !ok {
-					continue
-				}
-				switch {
-				case (t == "-C" || t == "--directory" || t == "--chdir" || t == "-D") && i+2 < len(x.Args):
-					cdTargets = append(cdTargets, x.Args[i+2])
-				case strings.HasPrefix(t, "--directory=") || strings.HasPrefix(t, "--chdir="):
-					cdTargets = append(cdTargets, &syntax.Word{Parts: []syntax.WordPart{&syntax.Lit{Value: t[strings.IndexByte(t, '=')+1:]}}})
-				}
-			}
+			s.inrCollectCall(x, &acc)
 		}
 		return true
 	})
-	s.addBases(cdTargets)
-	for _, l := range links {
-		for _, t := range s.wordAlts(l[0], modePattern) {
-			for _, k := range s.wordAlts(l[1], modePattern) {
-				s.sec.addAlias(t, k)
-			}
-		}
-	}
+	s.addBases(acc.cdTargets)
+	s.inrAddLinkAliases(acc.links)
 }
 
 func litWord(t string) *syntax.Word {
@@ -611,42 +536,7 @@ func (s *shellEval) checkDecl(d *syntax.DeclClause) {
 	if d.Variant != nil {
 		variant = d.Variant.Value
 	}
-	flags := ""
-	var names []string
-	assigns := 0
-	for _, a := range d.Args {
-		if a.Name != nil && !a.Naked {
-			assigns++
-		}
-		if a.Naked && a.Name == nil && a.Value != nil {
-			t, ok := staticText(s.wordAlts(a.Value, modePattern))
-			if !ok {
-				names = append(names, string(dynAny))
-				continue
-			}
-			if strings.HasPrefix(t, "-") || strings.HasPrefix(t, "+") {
-				flags += t[1:]
-				continue
-			}
-			names = append(names, t)
-			continue
-		}
-		if a.Name != nil {
-			if a.Naked {
-				names = append(names, a.Name.Value)
-			}
-			s.checkAssign(a, false)
-			if strings.Contains(flags, "n") && a.Value != nil {
-				for _, alt := range s.wordAlts(a.Value, modeRaw) {
-					if isDynamic(alt) {
-						s.c.deny(RuleEnvExposure, "a nameref (declare -n) to a variable chosen at runtime could expose a secret environment variable.")
-						continue
-					}
-					s.checkEnvName(alt)
-				}
-			}
-		}
-	}
+	flags, names, assigns := s.inrDeclArgs(d.Args)
 	if variant == "local" || variant == "nameref" {
 		return
 	}
@@ -658,13 +548,7 @@ func (s *shellEval) checkDecl(d *syntax.DeclClause) {
 		return
 	}
 	if strings.Contains(flags, "p") {
-		for _, n := range names {
-			if isDynamic(n) {
-				s.c.deny(RuleEnvExposure, envDumpReason)
-				continue
-			}
-			s.checkEnvName(n)
-		}
+		s.inrCheckDeclPrint(names)
 	}
 }
 
@@ -867,64 +751,9 @@ func (s *shellEval) producerUncached(st *syntax.Stmt) *stdinInfo {
 			return &out
 		}
 	case *syntax.CallExpr:
-		if len(x.Args) == 0 {
-			break
+		if info := s.inrCallProducer(st, x); info != nil {
+			return info
 		}
-		var argv [][]string
-		for _, a := range x.Args {
-			argv = append(argv, s.wordAlts(a, modePattern))
-		}
-		name, ok := staticText(argv[0])
-		if !ok {
-			break
-		}
-		name = cmdBase(name)
-		var texts []string
-		for _, a := range x.Args {
-			texts = append(texts, firstAlt(s.wordAlts(a, modeRaw)))
-		}
-		decode := isDecodeCmd(texts)
-		switch name {
-		case "echo", "printf":
-			var parts []string
-			escapes := name == "printf"
-			for i, a := range x.Args[1:] {
-				alts := s.wordAlts(a, modeRaw)
-				if len(alts) != 1 || strings.ContainsAny(alts[0], string([]rune{dynAny, dynStar})) {
-					return &stdinInfo{kind: stdinUnknown, decode: decode}
-				}
-				t := alts[0]
-				if name == "echo" && i == 0 && strings.HasPrefix(t, "-") && len(t) > 1 && strings.Trim(t[1:], "neE") == "" {
-					escapes = strings.Contains(t, "e")
-					continue
-				}
-				parts = append(parts, t)
-			}
-			text := strings.Join(parts, " ")
-			if name == "printf" && len(parts) > 0 {
-				text = parts[0]
-				if strings.Contains(text, "%") {
-					text = strings.Join(parts[1:], "\n")
-				}
-			}
-			if escapes {
-				text = ansiC(text)
-			}
-			return &stdinInfo{kind: stdinStatic, texts: []string{text}, decode: decode}
-		case "cat":
-			if len(x.Args) == 1 {
-				if info := s.stmtStdin(st); info != nil && info.kind == stdinStatic {
-					return info
-				}
-			}
-		case "find":
-			return &stdinInfo{kind: stdinGlob, texts: s.findOutputs(argv)}
-		case "git":
-			if globs := gitLsFilesOutputs(argv); globs != nil {
-				return &stdinInfo{kind: stdinGlob, texts: globs}
-			}
-		}
-		return &stdinInfo{kind: stdinUnknown, decode: decode}
 	}
 	return &stdinInfo{kind: stdinUnknown, decode: s.containsDecode(st)}
 }

@@ -658,8 +658,11 @@ func (s *secretSet) dirHolds(arg string, ancestors bool) (match, bool) {
 	if hasGlobMeta(arg) {
 		return match{}, false
 	}
+	limit := s.maxDirLen(ancestors)
 	for _, c := range s.candidates(arg) {
-		if hasGlobMeta(c) {
+		if hasGlobMeta(c) || len(strings.TrimSuffix(c, "/")) > limit {
+			// Too long to be an ancestor of any anchored pattern (or of
+			// the root/home): skip the costly path parsing.
 			continue
 		}
 		self := parsePath(strings.TrimSuffix(c, "/") + "/**")
@@ -753,4 +756,20 @@ func (s *secretSet) allowHint() string {
 		names = append(names, a.orig)
 	}
 	return "Use " + strings.Join(names, ", ") + " to learn the variable names, or ask the user."
+}
+
+// maxDirLen bounds the length of a directory that dirHolds can match: the
+// longest fixed directory of an anchored pattern, or with ancestors also the
+// project root and the home directory.
+func (s *secretSet) maxDirLen(ancestors bool) int {
+	n := 0
+	for _, f := range s.files {
+		if !f.anywhere() {
+			n = max(n, len(f.fixedDir()))
+		}
+	}
+	if ancestors {
+		n = max(n, len(s.root), len(s.home))
+	}
+	return n
 }

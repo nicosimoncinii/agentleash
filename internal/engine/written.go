@@ -143,66 +143,15 @@ func (s *shellEval) stmtWrites(st *syntax.Stmt, teeIn map[*syntax.Stmt]*stdinInf
 	if call != nil && len(call.Args) > 0 {
 		name = cmdBase(s.staticArg(call.Args[0]))
 	}
-	for _, r := range st.Redirs {
-		if !writeOps[r.Op] || r.Word == nil {
-			continue
-		}
-		key := writeKey(s.staticArg(r.Word))
-		if key == "" || key == "/dev/null" {
-			continue
-		}
-		if (r.N != nil && r.N.Value != "1") || call == nil {
-			s.written.add(key, writeRec{dynamic: true})
-			continue
-		}
-		if dl := s.downloadForms(st); dl != nil {
-			s.written.add(key, writeRec{dynamic: true, download: dl})
-			continue
-		}
-		s.written.add(key, s.contentRec(s.producer(st), echoNewline(name, call)))
-	}
+	s.inrRedirWrites(st, call, name)
 	if call == nil {
 		return
 	}
 	switch name {
 	case "tee":
-		info := teeIn[st]
-		for _, r := range st.Redirs {
-			if r.Op == syntax.Hdoc || r.Op == syntax.DashHdoc || r.Op == syntax.WordHdoc {
-				info = s.stmtStdin(st)
-			}
-		}
-		for _, a := range call.Args[1:] {
-			t := s.staticArg(a)
-			if t == "" || strings.HasPrefix(t, "-") {
-				continue
-			}
-			rec := s.contentRec(info, false)
-			if dl := teeDl[st]; dl != nil && info == teeIn[st] {
-				rec = writeRec{dynamic: true, download: dl}
-			}
-			s.written.add(writeKey(t), rec)
-		}
+		s.inrTeeWrites(st, call, teeIn, teeDl)
 	case "cp", "mv", "install":
-		var ops []string
-		for _, a := range call.Args[1:] {
-			t := s.staticArg(a)
-			if t == "" {
-				return
-			}
-			if !strings.HasPrefix(t, "-") {
-				ops = append(ops, t)
-			}
-		}
-		if len(ops) != 2 {
-			return
-		}
-		for _, k := range s.written.lookup(ops[0]) {
-			for _, rec := range s.written.byKey[k] {
-				s.written.add(writeKey(ops[1]), rec)
-				s.written.add(writeKey(ops[1]+"/"+path.Base(k)), rec)
-			}
-		}
+		s.inrCopyWrites(call)
 	}
 }
 
@@ -241,40 +190,8 @@ func (s *shellEval) checkWrittenRuns(root syntax.Node) {
 		return
 	}
 	s.walk(root, func(n syntax.Node) bool {
-		st, ok := n.(*syntax.Stmt)
-		if !ok {
-			return true
-		}
-		call, ok := st.Cmd.(*syntax.CallExpr)
-		if !ok || len(call.Args) == 0 {
-			return true
-		}
-		stdinFile := ""
-		for _, r := range st.Redirs {
-			if r.Op == syntax.RdrIn && r.Word != nil {
-				stdinFile = s.staticArg(r.Word)
-			}
-		}
-		for _, argv := range s.callArgv(call) {
-			for _, level := range unwrapLevels(argv) {
-				if len(level) == 0 {
-					continue
-				}
-				name := cmdBase(level[0])
-				lang := name
-				if shells[name] || name == "source" || name == "." || name == "sudo" || name == "doas" || name == "su" {
-					lang = "sh"
-				}
-				switch op := scriptOperand(level); {
-				case op != "" && name != "pwsh" && name != "powershell":
-					s.runWritten(level[0], op, lang)
-				case op == "" && strings.Contains(level[0], "/"):
-					s.runWritten(level[0], level[0], "")
-				}
-				if stdinFile != "" && stdinCodeRunner(level) {
-					s.runWritten(level[0], stdinFile, lang)
-				}
-			}
+		if st, ok := n.(*syntax.Stmt); ok {
+			s.inrStmtWrittenRuns(st)
 		}
 		return true
 	})

@@ -269,26 +269,38 @@ func (c *config) save(owned []string, create bool) ([]string, error) {
 	var changed []string
 	path := settingsPath(c.root)
 	if (c.existed && !bytes.Equal(settings, c.canon)) || (!c.existed && create) {
-		target := path
-		if resolved, err := filepath.EvalSymlinks(path); err == nil {
-			target = resolved // keep a symlinked settings.json a symlink
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
-			return nil, fmt.Errorf("claude: %w", err)
-		}
-		if c.existed {
-			if _, err := os.Lstat(path + ".bak"); errors.Is(err, fs.ErrNotExist) {
-				if err := writeFileAtomic(path+".bak", c.orig, c.mode); err != nil {
-					return nil, err
-				}
-			}
-		}
-		if err := writeFileAtomic(target, settings, c.mode); err != nil {
+		if err := c.agrWriteSettings(path, settings); err != nil {
 			return nil, err
 		}
 		changed = append(changed, path)
 	}
+	return c.agrSaveState(changed, newState)
+}
 
+// agrWriteSettings writes settings to the settings.json at path (following a symlink so
+// it stays a symlink), first backing up the original to settings.json.bak when the file
+// existed and no backup exists yet.
+func (c *config) agrWriteSettings(path string, settings []byte) error {
+	target := path
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		target = resolved // keep a symlinked settings.json a symlink
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+		return fmt.Errorf("claude: %w", err)
+	}
+	if c.existed {
+		if _, err := os.Lstat(path + ".bak"); errors.Is(err, fs.ErrNotExist) {
+			if err := writeFileAtomic(path+".bak", c.orig, c.mode); err != nil {
+				return err
+			}
+		}
+	}
+	return writeFileAtomic(target, settings, c.mode)
+}
+
+// agrSaveState writes newState to the state file, or removes the file when newState is
+// nil, if that changes it. It returns changed plus the state path when it was touched.
+func (c *config) agrSaveState(changed []string, newState []byte) ([]string, error) {
 	switch sp := statePath(c.root); {
 	case newState == nil && c.state != nil:
 		if err := os.Remove(sp); err != nil {

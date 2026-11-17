@@ -41,82 +41,95 @@ func interactiveProgram(argv []string) (string, bool) {
 	if stdinCodeRunner(argv) {
 		return "an interactive shell or interpreter", true
 	}
-	switch {
-	case stdinInterpreters[name] || name == "irb" || name == "pry" || name == "iex" || name == "ghci":
-		// python -i script.py, node -i, php -a: REPL after the program.
-		for _, a := range args {
-			if a == "-i" || a == "--interactive" || (name == "php" && a == "-a") {
-				return "an interactive interpreter", true
-			}
-			if a == "--" || (!strings.HasPrefix(a, "-") && a != "") {
-				break
-			}
-		}
-		if name == "irb" || name == "pry" || (name == "iex" && !hasAny(args, "-e", "--eval")) {
-			return "an interactive interpreter", true
-		}
-	case name == "wsl":
-		if wslInteractive(args) {
-			return "an interactive WSL shell", true
-		}
-	case name == "cmd":
-		if !hasFold(args, "/c") {
-			return "an interactive cmd.exe", true
-		}
-	case name == "ssh":
-		if sshInteractive(args) {
-			return "a remote shell", true
-		}
-	case name == "docker" || name == "podman" || name == "nerdctl":
-		if containerInteractive(args, "-i", "--interactive") {
-			return "an interactive container session", true
-		}
-	case name == "kubectl" || name == "oc":
-		if containerInteractive(args, "-i", "--stdin") {
-			return "an interactive pod session", true
-		}
-	case name == "psql":
-		if !hasAnyPrefix(args, "-c", "--command", "-f", "--file", "-l", "--list", "-V", "--version", "--help") {
-			return "a database shell", true
-		}
-	case name == "mysql" || name == "mariadb":
-		if !hasAnyPrefix(args, "-e", "--execute", "-V", "--version", "--help") {
-			return "a database shell", true
-		}
-	case name == "sqlite3":
-		if operands(args) < 2 && !hasAnyPrefix(args, "-version", "--version", "-help", "--help", "-cmd") {
-			return "a database shell", true
-		}
-	case name == "redis-cli" || name == "valkey-cli":
-		if operands(args) == 0 && !hasAnyPrefix(args, "--version", "--help", "-v") {
-			return "a database shell", true
-		}
-	case name == "mongosh" || name == "mongo":
-		if !hasAnyPrefix(args, "--eval", "-f", "--file", "--version", "--help") && !hasScriptOperand(args, ".js") {
-			return "a database shell", true
-		}
-	case name == "gdb" || name == "lldb":
-		if !hasAnyPrefix(args, "-batch", "--batch", "-b", "--version", "-version") {
-			return "an interactive debugger", true
-		}
-	case name == "sftp" || name == "ftp" || name == "telnet":
-		if !hasAnyPrefix(args, "-b", "--version") {
-			return "an interactive network client", true
-		}
-	case name == "vi" || name == "vim" || name == "nvim" || name == "view" || name == "ex" || name == "ed" || name == "nano" || name == "pico" || name == "micro":
-		if !hasAnyPrefix(args, "--version", "-es", "-Es", "--headless") {
-			return "an editor that can run shell commands", true
-		}
-	case name == "emacs":
-		if !hasAnyPrefix(args, "--batch", "-batch", "--script", "--version") {
-			return "an editor that can run shell commands", true
-		}
-	case name == "less" || name == "more" || name == "most" || name == "man":
-		return "a pager that can run shell commands (!cmd)", true
-	case name == "tmux" || name == "screen" || name == "script" || name == "expect":
-		return "a terminal session that runs commands typed later", true
+	if stdinInterpreters[name] || psrREPLs[name] {
+		return psrInterpreterSession(name, args)
+	}
+	if check, ok := psrInteractiveChecks[name]; ok {
+		return check(args)
 	}
 	return "", false
+}
+
+// psrREPLs are interpreters, besides stdinInterpreters, that start a REPL.
+var psrREPLs = set("irb", "pry", "iex", "ghci")
+
+// psrInterpreterSession reports an interpreter that ends up in a REPL:
+// python -i script.py, node -i, php -a, or irb/pry/iex without code.
+func psrInterpreterSession(name string, args []string) (string, bool) {
+	for _, a := range args {
+		if a == "-i" || a == "--interactive" || (name == "php" && a == "-a") {
+			return "an interactive interpreter", true
+		}
+		if a == "--" || (!strings.HasPrefix(a, "-") && a != "") {
+			break
+		}
+	}
+	if name == "irb" || name == "pry" || (name == "iex" && !hasAny(args, "-e", "--eval")) {
+		return "an interactive interpreter", true
+	}
+	return "", false
+}
+
+// psrInteractiveCheck reports, from a program's arguments, whether it reads
+// commands from stdin and what it starts.
+type psrInteractiveCheck func(args []string) (string, bool)
+
+// psrInteractiveChecks maps program names to their interactive-session check.
+var psrInteractiveChecks = psrBuildInteractiveChecks()
+
+// psrBuildInteractiveChecks builds psrInteractiveChecks.
+func psrBuildInteractiveChecks() map[string]psrInteractiveCheck {
+	m := map[string]psrInteractiveCheck{}
+	add := func(check psrInteractiveCheck, names ...string) {
+		for _, n := range names {
+			m[n] = check
+		}
+	}
+	add(psrWhen("an interactive WSL shell", wslInteractive), "wsl")
+	add(psrWhen("an interactive cmd.exe", func(args []string) bool { return !hasFold(args, "/c") }), "cmd")
+	add(psrWhen("a remote shell", sshInteractive), "ssh")
+	add(psrWhen("an interactive container session", func(args []string) bool {
+		return containerInteractive(args, "-i", "--interactive")
+	}), "docker", "podman", "nerdctl")
+	add(psrWhen("an interactive pod session", func(args []string) bool {
+		return containerInteractive(args, "-i", "--stdin")
+	}), "kubectl", "oc")
+	add(psrUnless("a database shell", "-c", "--command", "-f", "--file", "-l", "--list", "-V", "--version", "--help"), "psql")
+	add(psrUnless("a database shell", "-e", "--execute", "-V", "--version", "--help"), "mysql", "mariadb")
+	add(psrWhen("a database shell", func(args []string) bool {
+		return operands(args) < 2 && !hasAnyPrefix(args, "-version", "--version", "-help", "--help", "-cmd")
+	}), "sqlite3")
+	add(psrWhen("a database shell", func(args []string) bool {
+		return operands(args) == 0 && !hasAnyPrefix(args, "--version", "--help", "-v")
+	}), "redis-cli", "valkey-cli")
+	add(psrWhen("a database shell", func(args []string) bool {
+		return !hasAnyPrefix(args, "--eval", "-f", "--file", "--version", "--help") && !hasScriptOperand(args, ".js")
+	}), "mongosh", "mongo")
+	add(psrUnless("an interactive debugger", "-batch", "--batch", "-b", "--version", "-version"), "gdb", "lldb")
+	add(psrUnless("an interactive network client", "-b", "--version"), "sftp", "ftp", "telnet")
+	add(psrUnless("an editor that can run shell commands", "--version", "-es", "-Es", "--headless"),
+		"vi", "vim", "nvim", "view", "ex", "ed", "nano", "pico", "micro")
+	add(psrUnless("an editor that can run shell commands", "--batch", "-batch", "--script", "--version"), "emacs")
+	add(psrWhen("a pager that can run shell commands (!cmd)", nil), "less", "more", "most", "man")
+	add(psrWhen("a terminal session that runs commands typed later", nil), "tmux", "screen", "script", "expect")
+	return m
+}
+
+// psrWhen returns a check reporting what when cond holds for the arguments
+// (always when cond is nil).
+func psrWhen(what string, cond func(args []string) bool) psrInteractiveCheck {
+	return func(args []string) (string, bool) {
+		if cond == nil || cond(args) {
+			return what, true
+		}
+		return "", false
+	}
+}
+
+// psrUnless returns a check reporting what unless one of the non-interactive
+// options opts is given (see hasAnyPrefix).
+func psrUnless(what string, opts ...string) psrInteractiveCheck {
+	return psrWhen(what, func(args []string) bool { return !hasAnyPrefix(args, opts...) })
 }
 
 func hasAny(args []string, opts ...string) bool {

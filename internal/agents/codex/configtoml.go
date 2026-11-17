@@ -61,178 +61,22 @@ func editConfig(data []byte, env []string) ([]byte, []string, error) {
 	if strings.Contains(text, "\r\n") {
 		nl = "\r\n"
 	}
-	user, bodies, err := stripManaged(text, nl)
+	user, userMap, err := agrStripAndParse(text, nl)
 	if err != nil {
 		return nil, nil, err
 	}
-	userMap, err := parseTOML(user)
+	sep, err := agrPolicyTable(userMap)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse .codex/config.toml: %w", err)
-	}
-	if len(bodies) > 0 {
-		if err := verifyStrip(text, userMap, bodies); err != nil {
-			return nil, nil, err
-		}
+		return nil, nil, err
 	}
 
-	var sep map[string]any
-	if v, ok := userMap[sepKey]; ok {
-		if sep, ok = v.(map[string]any); !ok {
-			return nil, nil, fmt.Errorf("config.toml: %s is not a table; %s", sepKey, manualHint)
-		}
+	e := &agrConfigEdit{user: user, nl: nl, env: env, sep: sep}
+	out, warnings, verify, err := e.agrPlan()
+	if err != nil {
+		return nil, nil, err
 	}
-	_, hasExclude := sep[excludeWord]
-	includeOnly, hasIncludeOnly := sep["include_only"]
-
-	var out string
-	var warnings []string
-	var verify func(got map[string]any) error
-	switch {
-	case hasExclude || hasIncludeOnly:
-		if inc, ok := includeOnly.([]any); ok {
-			for _, e := range inc {
-				if s, ok := e.(string); ok {
-					warnings = append(warnings, includeConflicts(env, "include_only entry "+tomlString(s), s)...)
-				}
-			}
-		}
-		if !hasExclude {
-			want := missing(env, nil)
-			if len(want) == 0 {
-				out = user
-				break
-			}
-			pos, ok := findHeader(user, sepKey)
-			if !ok {
-				return nil, nil, fmt.Errorf("config.toml: no [%s] header found; %s", sepKey, manualHint)
-			}
-			lines := []string{excludeWord + " = ["}
-			for _, p := range want {
-				lines = append(lines, "  "+tomlString(p)+",")
-			}
-			lines = append(lines, "]")
-			out = insertBlock(user, pos, lines, nl)
-			verify = func(got map[string]any) error {
-				gsep, _ := got[sepKey].(map[string]any)
-				if !reflect.DeepEqual(gsep[excludeWord], toAny(want)) {
-					return errors.New("exclude array mismatch")
-				}
-				delete(gsep, excludeWord)
-				return nil
-			}
-			break
-		}
-		existing, ok := sep[excludeWord].([]any)
-		if !ok {
-			return nil, nil, fmt.Errorf("config.toml: %s.exclude is not an array; %s", sepKey, manualHint)
-		}
-		var handled []string
-		for _, e := range existing {
-			if s, ok := e.(string); ok {
-				handled = append(handled, s)
-			}
-		}
-		want := missing(env, handled)
-		if len(want) == 0 {
-			out = user
-			break
-		}
-		pos, err := findExcludeArray(user)
-		if err != nil {
-			return nil, nil, err
-		}
-		var lines []string
-		for _, p := range want {
-			lines = append(lines, tomlString(p)+",")
-		}
-		out = insertBlock(user, pos, lines, nl)
-		verify = func(got map[string]any) error {
-			gsep, _ := got[sepKey].(map[string]any)
-			arr, _ := gsep[excludeWord].([]any)
-			if !reflect.DeepEqual(arr, append(toAny(want), existing...)) {
-				return errors.New("exclude array mismatch")
-			}
-			gsep[excludeWord] = existing
-			return nil
-		}
-	default:
-		filters, hasFilters := sep["filters"].(map[string]any)
-		if _, ok := sep["filters"]; ok && !hasFilters {
-			return nil, nil, fmt.Errorf("config.toml: %s is not a table; %s", filtersHdr, manualHint)
-		}
-		// Only keys whose value is "exclude" already do our job. A same-named key with another
-		// value cannot be overridden (keys merge case-insensitively; a duplicate is invalid), so
-		// it is reported instead of silently skipped.
-		handled := sortedKeys(filters) // existing keys can never be added again
-		for _, k := range handled {
-			v, _ := filters[k].(string)
-			if strings.EqualFold(v, excludeWord) {
-				continue
-			}
-			overridden := false
-			for _, g := range env {
-				if strings.EqualFold(g, k) {
-					overridden = true
-					warnings = append(warnings, fmt.Sprintf(
-						"Warning: .codex/config.toml filter %s = %s overrides agentleash's exclude for %s "+
-							"(filter keys are case-insensitive), so matching variables are NOT removed from "+
-							"commands Codex runs. Change it to \"exclude\" or delete it, then re-run apply.",
-						tomlString(k), tomlString(v), tomlString(g)))
-				}
-			}
-			if !overridden && strings.EqualFold(v, "include") {
-				warnings = append(warnings, includeConflicts(env, "filter "+tomlString(k)+" = \"include\"", k)...)
-			}
-		}
-		want := missing(env, handled)
-		if len(want) == 0 {
-			out = user
-			break
-		}
-		var lines []string
-		if hasFilters {
-			pos, ok := findHeader(user, filtersHdr)
-			if !ok {
-				return nil, nil, fmt.Errorf("config.toml: %s is not written as a [%s] table; %s", filtersHdr, filtersHdr, manualHint)
-			}
-			for _, p := range want {
-				lines = append(lines, tomlString(p)+" = "+tomlString(excludeWord))
-			}
-			out = insertBlock(user, pos, lines, nl)
-		} else {
-			lines = append(lines, "["+filtersHdr+"]")
-			for _, p := range want {
-				lines = append(lines, tomlString(p)+" = "+tomlString(excludeWord))
-			}
-			out = appendBlock(user, lines, nl)
-		}
-		verify = func(got map[string]any) error {
-			gsep, _ := got[sepKey].(map[string]any)
-			gf, _ := gsep["filters"].(map[string]any)
-			for _, p := range want {
-				if gf[p] != excludeWord {
-					return fmt.Errorf("filter %q missing", p)
-				}
-				delete(gf, p)
-			}
-			if !hasFilters {
-				delete(gsep, "filters")
-				if sep == nil {
-					delete(got, sepKey)
-				}
-			}
-			return nil
-		}
-	}
-
-	if verify != nil {
-		got, err := parseTOML(out)
-		if err != nil {
-			return nil, nil, fmt.Errorf("config.toml: cannot insert agentleash settings safely (%w); %s", err, manualHint)
-		}
-		if err := verify(got); err != nil || !reflect.DeepEqual(got, userMap) {
-			return nil, nil, fmt.Errorf("config.toml: cannot insert agentleash settings safely; %s", manualHint)
-		}
+	if err := agrVerifyEdit(out, userMap, verify); err != nil {
+		return nil, nil, err
 	}
 	switch {
 	case out == text:
@@ -241,6 +85,266 @@ func editConfig(data []byte, env []string) ([]byte, []string, error) {
 		return nil, warnings, nil // the file held only agentleash settings
 	}
 	return []byte(out), warnings, nil
+}
+
+// agrVerifier checks a re-parsed edited document: it confirms agentleash's entries are as
+// intended and removes them from got, so that got can then be compared with the user's
+// own document.
+type agrVerifier func(got map[string]any) error
+
+// agrConfigEdit holds the inputs shared by the config.toml edit strategies: the user's
+// text without agentleash blocks, its line break, the wanted env globs and the user's
+// shell_environment_policy table (nil when absent).
+type agrConfigEdit struct {
+	user string
+	nl   string
+	env  []string
+	sep  map[string]any
+}
+
+// agrStripAndParse removes agentleash's blocks from text, parses what remains, and proves
+// that the removal changed nothing else. It returns the stripped text and its parse.
+func agrStripAndParse(text, nl string) (string, map[string]any, error) {
+	user, bodies, err := stripManaged(text, nl)
+	if err != nil {
+		return "", nil, err
+	}
+	userMap, err := parseTOML(user)
+	if err != nil {
+		return "", nil, fmt.Errorf("parse .codex/config.toml: %w", err)
+	}
+	if len(bodies) > 0 {
+		if err := verifyStrip(text, userMap, bodies); err != nil {
+			return "", nil, err
+		}
+	}
+	return user, userMap, nil
+}
+
+// agrPolicyTable returns the user's shell_environment_policy table (nil when absent), or
+// an error when that key is not a table.
+func agrPolicyTable(userMap map[string]any) (map[string]any, error) {
+	v, ok := userMap[sepKey]
+	if !ok {
+		return nil, nil
+	}
+	sep, ok := v.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("config.toml: %s is not a table; %s", sepKey, manualHint)
+	}
+	return sep, nil
+}
+
+// agrPlan picks the edit strategy: legacy exclude/include_only arrays when the user's
+// table already uses them, filters otherwise. It returns the new text, the warnings and
+// the verifier for the edit (nil when the text is unchanged).
+func (e *agrConfigEdit) agrPlan() (string, []string, agrVerifier, error) {
+	_, hasExclude := e.sep[excludeWord]
+	includeOnly, hasIncludeOnly := e.sep["include_only"]
+	if !hasExclude && !hasIncludeOnly {
+		return e.agrAddFilters()
+	}
+	warnings := agrIncludeOnlyWarnings(e.env, includeOnly)
+	var (
+		out    string
+		verify agrVerifier
+		err    error
+	)
+	if hasExclude {
+		out, verify, err = e.agrExtendExclude()
+	} else {
+		out, verify, err = e.agrAddExclude()
+	}
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return out, warnings, verify, nil
+}
+
+// agrIncludeOnlyWarnings warns about every include_only string entry that an agentleash
+// exclude glob matches.
+func agrIncludeOnlyWarnings(env []string, includeOnly any) []string {
+	inc, ok := includeOnly.([]any)
+	if !ok {
+		return nil
+	}
+	var warnings []string
+	for _, e := range inc {
+		if s, ok := e.(string); ok {
+			warnings = append(warnings, includeConflicts(env, "include_only entry "+tomlString(s), s)...)
+		}
+	}
+	return warnings
+}
+
+// agrAddExclude adds a managed `exclude = [...]` array under the [shell_environment_policy]
+// header of a table that uses include_only but has no exclude array yet.
+func (e *agrConfigEdit) agrAddExclude() (string, agrVerifier, error) {
+	want := missing(e.env, nil)
+	if len(want) == 0 {
+		return e.user, nil, nil
+	}
+	pos, ok := findHeader(e.user, sepKey)
+	if !ok {
+		return "", nil, fmt.Errorf("config.toml: no [%s] header found; %s", sepKey, manualHint)
+	}
+	lines := []string{excludeWord + " = ["}
+	for _, p := range want {
+		lines = append(lines, "  "+tomlString(p)+",")
+	}
+	lines = append(lines, "]")
+	out := insertBlock(e.user, pos, lines, e.nl)
+	verify := func(got map[string]any) error {
+		gsep, _ := got[sepKey].(map[string]any)
+		if !reflect.DeepEqual(gsep[excludeWord], toAny(want)) {
+			return errors.New("exclude array mismatch")
+		}
+		delete(gsep, excludeWord)
+		return nil
+	}
+	return out, verify, nil
+}
+
+// agrExtendExclude prepends the missing env globs, as a managed block, to the user's
+// existing legacy exclude array.
+func (e *agrConfigEdit) agrExtendExclude() (string, agrVerifier, error) {
+	existing, ok := e.sep[excludeWord].([]any)
+	if !ok {
+		return "", nil, fmt.Errorf("config.toml: %s.exclude is not an array; %s", sepKey, manualHint)
+	}
+	var handled []string
+	for _, v := range existing {
+		if s, ok := v.(string); ok {
+			handled = append(handled, s)
+		}
+	}
+	want := missing(e.env, handled)
+	if len(want) == 0 {
+		return e.user, nil, nil
+	}
+	pos, err := findExcludeArray(e.user)
+	if err != nil {
+		return "", nil, err
+	}
+	var lines []string
+	for _, p := range want {
+		lines = append(lines, tomlString(p)+",")
+	}
+	out := insertBlock(e.user, pos, lines, e.nl)
+	verify := func(got map[string]any) error {
+		gsep, _ := got[sepKey].(map[string]any)
+		arr, _ := gsep[excludeWord].([]any)
+		if !reflect.DeepEqual(arr, append(toAny(want), existing...)) {
+			return errors.New("exclude array mismatch")
+		}
+		gsep[excludeWord] = existing
+		return nil
+	}
+	return out, verify, nil
+}
+
+// agrAddFilters adds the missing env globs as `"GLOB" = "exclude"` filters, inside the
+// user's [shell_environment_policy.filters] table when there is one, or in a new table
+// appended at the end of the file.
+func (e *agrConfigEdit) agrAddFilters() (string, []string, agrVerifier, error) {
+	filters, hasFilters := e.sep["filters"].(map[string]any)
+	if _, ok := e.sep["filters"]; ok && !hasFilters {
+		return "", nil, nil, fmt.Errorf("config.toml: %s is not a table; %s", filtersHdr, manualHint)
+	}
+	handled := sortedKeys(filters) // existing keys can never be added again
+	warnings := agrFilterWarnings(e.env, filters, handled)
+	want := missing(e.env, handled)
+	if len(want) == 0 {
+		return e.user, warnings, nil, nil
+	}
+	var out string
+	if hasFilters {
+		pos, ok := findHeader(e.user, filtersHdr)
+		if !ok {
+			return "", nil, nil, fmt.Errorf("config.toml: %s is not written as a [%s] table; %s", filtersHdr, filtersHdr, manualHint)
+		}
+		out = insertBlock(e.user, pos, agrFilterLines(nil, want), e.nl)
+	} else {
+		out = appendBlock(e.user, agrFilterLines([]string{"[" + filtersHdr + "]"}, want), e.nl)
+	}
+	return out, warnings, agrFiltersVerifier(want, hasFilters, e.sep == nil), nil
+}
+
+// agrFilterLines appends a `"GLOB" = "exclude"` line for each glob in want to lines.
+func agrFilterLines(lines, want []string) []string {
+	for _, p := range want {
+		lines = append(lines, tomlString(p)+" = "+tomlString(excludeWord))
+	}
+	return lines
+}
+
+// agrFiltersVerifier checks that every glob in want became an "exclude" filter and removes
+// those filters, plus the tables agentleash created: the filters table when the user had
+// none, and shell_environment_policy too when the user had no such table (noSep).
+func agrFiltersVerifier(want []string, hasFilters, noSep bool) agrVerifier {
+	return func(got map[string]any) error {
+		gsep, _ := got[sepKey].(map[string]any)
+		gf, _ := gsep["filters"].(map[string]any)
+		for _, p := range want {
+			if gf[p] != excludeWord {
+				return fmt.Errorf("filter %q missing", p)
+			}
+			delete(gf, p)
+		}
+		if !hasFilters {
+			delete(gsep, "filters")
+			if noSep {
+				delete(got, sepKey)
+			}
+		}
+		return nil
+	}
+}
+
+// agrFilterWarnings reports the user filters (the sorted keys in handled) that conflict
+// with agentleash's exclude globs. Only keys whose value is "exclude" already do our job.
+// A same-named key with another value cannot be overridden (keys merge case-insensitively;
+// a duplicate is invalid), so it is reported instead of silently skipped; an "include"
+// filter that an exclude glob matches is reported as well.
+func agrFilterWarnings(env []string, filters map[string]any, handled []string) []string {
+	var warnings []string
+	for _, k := range handled {
+		v, _ := filters[k].(string)
+		if strings.EqualFold(v, excludeWord) {
+			continue
+		}
+		overridden := false
+		for _, g := range env {
+			if strings.EqualFold(g, k) {
+				overridden = true
+				warnings = append(warnings, fmt.Sprintf(
+					"Warning: .codex/config.toml filter %s = %s overrides agentleash's exclude for %s "+
+						"(filter keys are case-insensitive), so matching variables are NOT removed from "+
+						"commands Codex runs. Change it to \"exclude\" or delete it, then re-run apply.",
+					tomlString(k), tomlString(v), tomlString(g)))
+			}
+		}
+		if !overridden && strings.EqualFold(v, "include") {
+			warnings = append(warnings, includeConflicts(env, "filter "+tomlString(k)+" = \"include\"", k)...)
+		}
+	}
+	return warnings
+}
+
+// agrVerifyEdit re-parses the edited text and proves, with verify, that it differs from
+// the user's document only by agentleash's entries. A nil verify means nothing was edited.
+func agrVerifyEdit(out string, userMap map[string]any, verify agrVerifier) error {
+	if verify == nil {
+		return nil
+	}
+	got, err := parseTOML(out)
+	if err != nil {
+		return fmt.Errorf("config.toml: cannot insert agentleash settings safely (%w); %s", err, manualHint)
+	}
+	if err := verify(got); err != nil || !reflect.DeepEqual(got, userMap) {
+		return fmt.Errorf("config.toml: cannot insert agentleash settings safely; %s", manualHint)
+	}
+	return nil
 }
 
 // includeConflicts warns when a user include names variables an agentleash exclude glob
@@ -364,37 +468,9 @@ func subtractBlock(doc, stripped map[string]any, body string) error {
 	if sep == nil {
 		return errors.New("no shell_environment_policy")
 	}
-	removeFilters := func(entries map[string]any) error {
-		filters, _ := sep["filters"].(map[string]any)
-		if filters == nil || len(entries) == 0 {
-			return errors.New("no filters")
-		}
-		for k, v := range entries {
-			if !reflect.DeepEqual(filters[k], v) {
-				return fmt.Errorf("filter %q differs", k)
-			}
-			delete(filters, k)
-		}
-		return nil
-	}
 	switch {
 	case lines[0] == "["+filtersHdr+"]": // appended table
-		parsed, err := parseTOML(body)
-		if err != nil {
-			return err
-		}
-		psep, _ := parsed[sepKey].(map[string]any)
-		entries, _ := psep["filters"].(map[string]any)
-		if err := removeFilters(entries); err != nil {
-			return err
-		}
-		ssep, _ := stripped[sepKey].(map[string]any)
-		if f, _ := sep["filters"].(map[string]any); len(f) == 0 && ssep["filters"] == nil {
-			delete(sep, "filters")
-		}
-		if len(sep) == 0 && stripped[sepKey] == nil {
-			delete(doc, sepKey)
-		}
+		return agrSubtractFiltersTable(doc, stripped, sep, body)
 	case strings.HasPrefix(lines[0], excludeWord+" = ["): // exclude array next to include_only
 		parsed, err := parseTOML(body)
 		if err != nil {
@@ -420,7 +496,46 @@ func subtractBlock(doc, stripped map[string]any, body string) error {
 		if err != nil {
 			return err
 		}
-		return removeFilters(entries)
+		return agrRemoveFilters(sep, entries)
+	}
+	return nil
+}
+
+// agrRemoveFilters removes entries from sep's filters table; every entry must be
+// present there with the same value.
+func agrRemoveFilters(sep, entries map[string]any) error {
+	filters, _ := sep["filters"].(map[string]any)
+	if filters == nil || len(entries) == 0 {
+		return errors.New("no filters")
+	}
+	for k, v := range entries {
+		if !reflect.DeepEqual(filters[k], v) {
+			return fmt.Errorf("filter %q differs", k)
+		}
+		delete(filters, k)
+	}
+	return nil
+}
+
+// agrSubtractFiltersTable removes an appended [shell_environment_policy.filters] block
+// body from doc (whose shell_environment_policy table is sep), dropping the tables it
+// leaves empty unless the stripped document still has them.
+func agrSubtractFiltersTable(doc, stripped, sep map[string]any, body string) error {
+	parsed, err := parseTOML(body)
+	if err != nil {
+		return err
+	}
+	psep, _ := parsed[sepKey].(map[string]any)
+	entries, _ := psep["filters"].(map[string]any)
+	if err := agrRemoveFilters(sep, entries); err != nil {
+		return err
+	}
+	ssep, _ := stripped[sepKey].(map[string]any)
+	if f, _ := sep["filters"].(map[string]any); len(f) == 0 && ssep["filters"] == nil {
+		delete(sep, "filters")
+	}
+	if len(sep) == 0 && stripped[sepKey] == nil {
+		delete(doc, sepKey)
 	}
 	return nil
 }

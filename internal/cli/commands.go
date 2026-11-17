@@ -148,87 +148,138 @@ func newApplyCmd(d *Deps) *cobra.Command {
 		Short: "Install (or remove) native rules and hooks for the selected agents",
 		Args:  cobra.NoArgs,
 		RunE: runtimeErrors(func(cmd *cobra.Command, _ []string) error {
-			selected, err := selectAdapters(d, agentNames, cmd.Flags().Changed("agent"))
-			if err != nil {
-				return err
-			}
-			cwd, err := d.Getwd()
-			if err != nil {
-				return err
-			}
-			root, found, err := d.FindPolicy(cwd)
-			if err != nil {
-				return fmt.Errorf("look for %s: %w", policy.FileName, err)
-			}
-			if !found {
-				return fmt.Errorf("no %s found in %s or any parent directory; run `agentleash init` first", policy.FileName, cwd)
-			}
-
-			out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
-			var (
-				p      *policy.Policy
-				binary string
-			)
-			if !remove {
-				path := filepath.Join(root, policy.FileName)
-				if p, err = d.LoadPolicy(path); err != nil {
-					return fmt.Errorf("%s: %w (fix it, or run `agentleash doctor`)", path, err)
-				}
-				if binary, err = selfPath(d); err != nil {
-					return fmt.Errorf("resolve agentleash binary path: %w", err)
-				}
-				if isTransientBinary(binary) {
-					fprintf(errOut, "agentleash: warning: %s looks like a temporary build (go run?); "+
-						"the hooks will break when it is deleted. Install agentleash and re-run apply.\n", binary)
-				}
-			}
-
-			failed := false
-			var notes []string
-			for _, a := range selected {
-				var changed []string
-				if remove {
-					changed, err = a.Remove(root)
-				} else {
-					changed, err = a.Apply(root, p, binary)
-				}
-				if err != nil {
-					failed = true
-					fprintf(errOut, "✗ %s: %v\n", a.Name(), err)
-					continue
-				}
-				switch {
-				case len(changed) == 0:
-					fprintf(out, "✓ %s: already up to date\n", a.Name())
-				case remove:
-					fprintf(out, "✓ %s: removed agentleash from %d file(s)\n", a.Name(), len(changed))
-				default:
-					fprintf(out, "✓ %s: updated %d file(s)\n", a.Name(), len(changed))
-				}
-				for _, c := range changed {
-					fprintf(out, "    %s\n", c)
-				}
-				if n, ok := a.(postApplyNoter); ok && !remove {
-					for _, note := range n.PostApplyNotes() {
-						notes = append(notes, a.Name()+": "+note)
-					}
-				}
-			}
-			if len(notes) > 0 {
-				fprintf(out, "\nNext steps:\n")
-				for _, n := range notes {
-					fprintf(out, "  - %s\n", n)
-				}
-			}
-			if failed {
-				return exitCode(1)
-			}
-			return nil
+			return agrRunApply(cmd, d, agentNames, remove)
 		}),
 	}
 	cmd.Flags().StringSliceVar(&agentNames, "agent", nil, "agents to configure (comma separated; default: all)")
 	cmd.Flags().BoolVar(&remove, "remove", false, "remove everything agentleash installed")
 	return cmd
+}
+
+// agrRunApply implements `agentleash apply`: it installs (or, with remove, removes)
+// agentleash for every selected adapter and reports the outcome of each one.
+func agrRunApply(cmd *cobra.Command, d *Deps, agentNames []string, remove bool) error {
+	selected, err := selectAdapters(d, agentNames, cmd.Flags().Changed("agent"))
+	if err != nil {
+		return err
+	}
+	root, err := agrFindPolicyRoot(d)
+	if err != nil {
+		return err
+	}
+
+	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
+	var (
+		p      *policy.Policy
+		binary string
+	)
+	if !remove {
+		if p, binary, err = agrLoadApplyInputs(d, root, errOut); err != nil {
+			return err
+		}
+	}
+
+	failed := false
+	var notes []string
+	for _, a := range selected {
+		adapterNotes, ok := agrApplyAdapter(a, root, p, binary, remove, out, errOut)
+		if !ok {
+			failed = true
+			continue
+		}
+		notes = append(notes, adapterNotes...)
+	}
+	agrPrintNextSteps(out, notes)
+	if failed {
+		return exitCode(1)
+	}
+	return nil
+}
+
+// agrFindPolicyRoot returns the directory holding the policy file that applies to the
+// current working directory.
+func agrFindPolicyRoot(d *Deps) (string, error) {
+	cwd, err := d.Getwd()
+	if err != nil {
+		return "", err
+	}
+	root, found, err := d.FindPolicy(cwd)
+	if err != nil {
+		return "", fmt.Errorf("look for %s: %w", policy.FileName, err)
+	}
+	if !found {
+		return "", fmt.Errorf("no %s found in %s or any parent directory; run `agentleash init` first", policy.FileName, cwd)
+	}
+	return root, nil
+}
+
+// agrLoadApplyInputs loads the policy under root and resolves the agentleash binary the
+// hooks will call, warning on errOut when that binary looks like a temporary build.
+func agrLoadApplyInputs(d *Deps, root string, errOut io.Writer) (*policy.Policy, string, error) {
+	path := filepath.Join(root, policy.FileName)
+	p, err := d.LoadPolicy(path)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s: %w (fix it, or run `agentleash doctor`)", path, err)
+	}
+	binary, err := selfPath(d)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve agentleash binary path: %w", err)
+	}
+	if isTransientBinary(binary) {
+		fprintf(errOut, "agentleash: warning: %s looks like a temporary build (go run?); "+
+			"the hooks will break when it is deleted. Install agentleash and re-run apply.\n", binary)
+	}
+	return p, binary, nil
+}
+
+// agrApplyAdapter applies (or, with remove, removes) agentleash for one adapter and
+// prints the result. It reports false when the adapter failed; otherwise it returns the
+// adapter's post-apply notes, each prefixed with the adapter name.
+func agrApplyAdapter(a agents.Adapter, root string, p *policy.Policy, binary string, remove bool, out, errOut io.Writer) ([]string, bool) {
+	var (
+		changed []string
+		err     error
+	)
+	if remove {
+		changed, err = a.Remove(root)
+	} else {
+		changed, err = a.Apply(root, p, binary)
+	}
+	if err != nil {
+		fprintf(errOut, "✗ %s: %v\n", a.Name(), err)
+		return nil, false
+	}
+	switch {
+	case len(changed) == 0:
+		fprintf(out, "✓ %s: already up to date\n", a.Name())
+	case remove:
+		fprintf(out, "✓ %s: removed agentleash from %d file(s)\n", a.Name(), len(changed))
+	default:
+		fprintf(out, "✓ %s: updated %d file(s)\n", a.Name(), len(changed))
+	}
+	for _, c := range changed {
+		fprintf(out, "    %s\n", c)
+	}
+	n, ok := a.(postApplyNoter)
+	if !ok || remove {
+		return nil, true
+	}
+	var notes []string
+	for _, note := range n.PostApplyNotes() {
+		notes = append(notes, a.Name()+": "+note)
+	}
+	return notes, true
+}
+
+// agrPrintNextSteps prints the collected post-apply notes, if there are any.
+func agrPrintNextSteps(out io.Writer, notes []string) {
+	if len(notes) == 0 {
+		return
+	}
+	fprintf(out, "\nNext steps:\n")
+	for _, n := range notes {
+		fprintf(out, "  - %s\n", n)
+	}
 }
 
 func selectAdapters(d *Deps, names []string, given bool) ([]agents.Adapter, error) {

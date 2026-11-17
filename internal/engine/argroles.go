@@ -55,61 +55,90 @@ func dataFiltered(name string, args []cmdArg) []cmdArg {
 	if !patternFirst[name] {
 		return args
 	}
-	explicit := false
-	for _, a := range args {
-		if t, ok := a.text(); ok && (dataValueOpts[t] || fileValueOpts[t] || strings.HasPrefix(t, "--regexp=") || strings.HasPrefix(t, "--expression=")) {
-			explicit = true
-		} else if l, _ := clusterValueOpt(name, t); ok && l != 0 {
-			explicit = true
-		}
-	}
 	out := make([]cmdArg, 0, len(args))
-	patternSeen := explicit
+	patternSeen := exrHasExplicitPattern(name, args)
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		t, ok := a.text()
 		if l, attached := clusterValueOpt(name, t); ok && l != 0 {
-			// -hf FILE, -ie PATTERN, -hfFILE: the cluster ends with (or
-			// carries) the value of -f (a file) or -e (data).
-			out = append(out, a)
-			switch {
-			case attached != "" && l == 'f':
-				out = append(out, litArg(attached))
-			case attached == "" && i+1 < len(args):
-				if l == 'f' {
-					out = append(out, args[i+1])
-				}
-				i++
-			}
+			out, i = exrKeepClusterValue(out, args, i, l, attached)
 			continue
 		}
-		switch {
-		case ok && dataValueOpts[t]:
-			out = append(out, a)
-			i++ // the value is a pattern/script: data
-		case ok && jqPairOpts[t] && (name == "jq" || name == "yq"):
-			out = append(out, a)
-			if t == "--slurpfile" || t == "--rawfile" {
-				if i+2 < len(args) {
-					out = append(out, args[i+2]) // the file
-				}
+		if ok {
+			var handled bool
+			if out, i, handled = exrKeepOption(name, out, args, i, t); handled {
+				continue
 			}
-			i += 2
-		case ok && (fileValueOpts[t] || valueOpts[t]):
-			out = append(out, a)
-			if i+1 < len(args) {
-				out = append(out, args[i+1])
-				i++
-			}
-		case ok && strings.HasPrefix(t, "-") && t != "-":
-			out = append(out, a)
-		case !patternSeen:
-			patternSeen = true // the pattern / script / filter
-		default:
-			out = append(out, a)
 		}
+		if !patternSeen {
+			patternSeen = true // the pattern / script / filter
+			continue
+		}
+		out = append(out, a)
 	}
 	return out
+}
+
+// exrHasExplicitPattern reports whether the pattern/script is given with an
+// option (-e, -f, --regexp=, --expression=, or -e/-f inside a cluster), so
+// that no operand is the pattern.
+func exrHasExplicitPattern(name string, args []cmdArg) bool {
+	for _, a := range args {
+		t, ok := a.text()
+		if ok && (dataValueOpts[t] || fileValueOpts[t] || strings.HasPrefix(t, "--regexp=") || strings.HasPrefix(t, "--expression=")) {
+			return true
+		}
+		if l, _ := clusterValueOpt(name, t); ok && l != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// exrKeepClusterValue handles -hf FILE, -ie PATTERN, -hfFILE: the cluster
+// ends with (or carries) the value of -f (a file, kept) or -e (data,
+// dropped). It returns the new output and the index of the last argument
+// consumed.
+func exrKeepClusterValue(out, args []cmdArg, i int, l byte, attached string) ([]cmdArg, int) {
+	out = append(out, args[i])
+	switch {
+	case attached != "" && l == 'f':
+		out = append(out, litArg(attached))
+	case attached == "" && i+1 < len(args):
+		if l == 'f' {
+			out = append(out, args[i+1])
+		}
+		i++
+	}
+	return out, i
+}
+
+// exrKeepOption keeps an option word t (at index i) and any path value it
+// takes, dropping data values. handled is false when t is not an option.
+func exrKeepOption(name string, out, args []cmdArg, i int, t string) ([]cmdArg, int, bool) {
+	a := args[i]
+	switch {
+	case dataValueOpts[t]:
+		out = append(out, a)
+		i++ // the value is a pattern/script: data
+	case jqPairOpts[t] && (name == "jq" || name == "yq"):
+		out = append(out, a)
+		if (t == "--slurpfile" || t == "--rawfile") && i+2 < len(args) {
+			out = append(out, args[i+2]) // the file
+		}
+		i += 2
+	case fileValueOpts[t] || valueOpts[t]:
+		out = append(out, a)
+		if i+1 < len(args) {
+			out = append(out, args[i+1])
+			i++
+		}
+	case strings.HasPrefix(t, "-") && t != "-":
+		out = append(out, a)
+	default:
+		return out, i, false
+	}
+	return out, i, true
 }
 
 // clusterFileOpt are the tools whose short -f takes a pattern/script file

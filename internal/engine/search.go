@@ -24,87 +24,119 @@ var rgRestricting = set("-g", "--glob", "--iglob", "-t", "--type", "--files", "-
 // that are normally gitignored, and prints their matching lines. A plain
 // `rg foo` respects .gitignore and hidden-file rules and stays allowed.
 func (s *shellEval) checkUnrestrictedSearch(args []cmdArg) {
-	unrestricted, hidden, noIgnore := 0, false, false
-	explicitPattern := false
-	var operands []cmdArg
+	var sc exrRgScan
 	for i := 0; i < len(args); i++ {
 		t, ok := args[i].text()
 		if !ok {
 			if strings.HasPrefix(args[i].textOr(), "-") {
 				return // a runtime option could be anything; other rules apply
 			}
-			operands = append(operands, args[i])
+			sc.operands = append(sc.operands, args[i])
 			continue
 		}
-		key := t
-		if eq := strings.IndexByte(t, '='); eq > 0 && strings.HasPrefix(t, "--") {
-			key = t[:eq]
-		}
-		switch {
-		case t == "--":
-			operands = append(operands, args[i+1:]...)
-			i = len(args)
-		case rgRestricting[key] || strings.HasPrefix(t, "--glob=") || strings.HasPrefix(t, "--iglob=") || strings.HasPrefix(t, "--type="):
+		next, stop := sc.exrArg(args, i, t)
+		if stop {
 			return
-		case key == "--unrestricted":
-			unrestricted++
-		case key == "--hidden":
-			hidden = true
-		case key == "--no-ignore" || key == "--no-ignore-vcs" || key == "--no-ignore-dot" || key == "--no-ignore-files":
-			noIgnore = true
-		case key == "-e" || key == "--regexp" || key == "-f" || key == "--file":
-			explicitPattern = true
-			if key == t {
-				i++
-			}
-		case rgValueOpts[key]:
-			if key == t {
-				i++
-			}
-		case strings.HasPrefix(t, "--"):
-		case strings.HasPrefix(t, "-") && len(t) > 1:
-			// A short cluster: count u, note '.', stop at a letter taking a value.
-			for j := 1; j < len(t); j++ {
-				c := t[j]
-				if c == 'u' {
-					unrestricted++
-					continue
-				}
-				if c == '.' {
-					hidden = true
-					continue
-				}
-				if strings.IndexByte("gt", c) >= 0 {
-					return // -g GLOB / -t TYPE restrict the search
-				}
-				if strings.IndexByte("lcq", c) >= 0 {
-					return // names, counts or nothing: no content printed
-				}
-				if rgValueOpts["-"+string(c)] {
-					if c == 'e' || c == 'f' {
-						explicitPattern = true
-					}
-					if j == len(t)-1 {
-						i++
-					}
-					break
-				}
-			}
-		default:
-			operands = append(operands, args[i])
 		}
+		i = next
 	}
-	noIgnore = noIgnore || unrestricted >= 1
-	hidden = hidden || unrestricted >= 2
+	noIgnore := sc.noIgnore || sc.unrestricted >= 1
+	hidden := sc.hidden || sc.unrestricted >= 2
 	if !noIgnore || !hidden {
 		return
 	}
-	if !explicitPattern && len(operands) > 0 {
+	operands := sc.operands
+	if !sc.explicitPattern && len(operands) > 0 {
 		operands = operands[1:] // the pattern
 	}
 	if len(operands) == 0 {
 		operands = []cmdArg{litArg(".")}
 	}
+	s.exrAskUnrestricted(operands)
+}
+
+// exrRgScan is the parsed command line of a ripgrep invocation.
+type exrRgScan struct {
+	unrestricted    int
+	hidden          bool
+	noIgnore        bool
+	explicitPattern bool
+	operands        []cmdArg
+}
+
+// exrArg interprets the static argument t at index i. It returns the index
+// of the last argument consumed, and stop when the search is restricted to
+// chosen files or prints no content.
+func (sc *exrRgScan) exrArg(args []cmdArg, i int, t string) (next int, stop bool) {
+	key := t
+	if eq := strings.IndexByte(t, '='); eq > 0 && strings.HasPrefix(t, "--") {
+		key = t[:eq]
+	}
+	switch {
+	case t == "--":
+		sc.operands = append(sc.operands, args[i+1:]...)
+		i = len(args)
+	case rgRestricting[key] || strings.HasPrefix(t, "--glob=") || strings.HasPrefix(t, "--iglob=") || strings.HasPrefix(t, "--type="):
+		return i, true
+	case key == "--unrestricted":
+		sc.unrestricted++
+	case key == "--hidden":
+		sc.hidden = true
+	case key == "--no-ignore" || key == "--no-ignore-vcs" || key == "--no-ignore-dot" || key == "--no-ignore-files":
+		sc.noIgnore = true
+	case key == "-e" || key == "--regexp" || key == "-f" || key == "--file":
+		sc.explicitPattern = true
+		if key == t {
+			i++
+		}
+	case rgValueOpts[key]:
+		if key == t {
+			i++
+		}
+	case strings.HasPrefix(t, "--"):
+	case strings.HasPrefix(t, "-") && len(t) > 1:
+		skipNext, restricted := sc.exrShortCluster(t)
+		if restricted {
+			return i, true
+		}
+		if skipNext {
+			i++
+		}
+	default:
+		sc.operands = append(sc.operands, args[i])
+	}
+	return i, false
+}
+
+// exrShortCluster interprets a short option cluster: it counts u, notes
+// '.', and stops at a letter taking a value. skipNext is true when that
+// value is the next argument; restricted is true for -g/-t (restricting the
+// search) and -l/-c/-q (no content printed).
+func (sc *exrRgScan) exrShortCluster(t string) (skipNext, restricted bool) {
+	for j := 1; j < len(t); j++ {
+		c := t[j]
+		switch {
+		case c == 'u':
+			sc.unrestricted++
+		case c == '.':
+			sc.hidden = true
+		case strings.IndexByte("gt", c) >= 0:
+			return false, true // -g GLOB / -t TYPE restrict the search
+		case strings.IndexByte("lcq", c) >= 0:
+			return false, true // names, counts or nothing: no content printed
+		case rgValueOpts["-"+string(c)]:
+			if c == 'e' || c == 'f' {
+				sc.explicitPattern = true
+			}
+			return j == len(t)-1, false
+		}
+	}
+	return false, false
+}
+
+// exrAskUnrestricted asks when a search directory contains the project
+// root, home or another secret location.
+func (s *shellEval) exrAskUnrestricted(operands []cmdArg) {
 	for _, d := range operands {
 		for _, alt := range d.alts {
 			if isDynamic(alt) {

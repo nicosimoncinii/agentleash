@@ -252,67 +252,84 @@ func ansiC(v string) string {
 			b.WriteByte(c)
 			continue
 		}
-		i++
-		switch v[i] {
-		case 'n':
-			b.WriteByte('\n')
-		case 't':
-			b.WriteByte('\t')
-		case 'r':
-			b.WriteByte('\r')
-		case 'a':
-			b.WriteByte(7)
-		case 'b':
-			b.WriteByte(8)
-		case 'e', 'E':
-			b.WriteByte(27)
-		case 'f':
-			b.WriteByte(12)
-		case 'v':
-			b.WriteByte(11)
-		case 'x':
-			j := i + 1
-			for j < len(v) && j < i+3 && isHex(v[j]) {
-				j++
-			}
-			if n, err := strconv.ParseUint(v[i+1:j], 16, 8); err == nil {
-				b.WriteByte(byte(n))
-			}
-			i = j - 1
-		case 'u', 'U':
-			maxLen := 4
-			if v[i] == 'U' {
-				maxLen = 8
-			}
-			j := i + 1
-			var r rune
-			for j < len(v) && j <= i+maxLen && isHex(v[j]) && r <= utf8.MaxRune {
-				r = r*16 + hexVal(v[j])
-				j++
-			}
-			if j > i+1 && r <= utf8.MaxRune {
-				b.WriteRune(r)
-			}
-			i = j - 1
-		case 'c':
-			if i+1 < len(v) {
-				i++
-				b.WriteByte(v[i] & 0x1f)
-			}
-		case '0', '1', '2', '3', '4', '5', '6', '7':
-			j := i
-			for j < len(v) && j < i+3 && v[j] >= '0' && v[j] <= '7' {
-				j++
-			}
-			if n, err := strconv.ParseUint(v[i:j], 8, 8); err == nil {
-				b.WriteByte(byte(n))
-			}
-			i = j - 1
-		default:
-			b.WriteByte(v[i])
-		}
+		i = psrAnsiEscape(&b, v, i+1)
 	}
 	return b.String()
+}
+
+// psrAnsiSimple maps single-letter $'...' escapes to the byte they stand for.
+var psrAnsiSimple = map[byte]byte{
+	'n': '\n', 't': '\t', 'r': '\r', 'a': 7, 'b': 8, 'e': 27, 'E': 27, 'f': 12, 'v': 11,
+}
+
+// psrAnsiEscape decodes the $'...' escape whose letter is v[i] (the byte
+// after the backslash) into b and returns the index of its last byte.
+func psrAnsiEscape(b *strings.Builder, v string, i int) int {
+	if out, ok := psrAnsiSimple[v[i]]; ok {
+		b.WriteByte(out)
+		return i
+	}
+	switch v[i] {
+	case 'x':
+		return psrAnsiHex(b, v, i)
+	case 'u', 'U':
+		return psrAnsiUnicode(b, v, i)
+	case 'c':
+		if i+1 < len(v) {
+			b.WriteByte(v[i+1] & 0x1f)
+			return i + 1
+		}
+		return i
+	case '0', '1', '2', '3', '4', '5', '6', '7':
+		return psrAnsiOctal(b, v, i)
+	}
+	b.WriteByte(v[i])
+	return i
+}
+
+// psrAnsiHex decodes \xHH (one or two hex digits) with v[i]=='x' and returns
+// the index of its last byte.
+func psrAnsiHex(b *strings.Builder, v string, i int) int {
+	j := i + 1
+	for j < len(v) && j < i+3 && isHex(v[j]) {
+		j++
+	}
+	if n, err := strconv.ParseUint(v[i+1:j], 16, 8); err == nil {
+		b.WriteByte(byte(n))
+	}
+	return j - 1
+}
+
+// psrAnsiUnicode decodes \uHHHH or \UHHHHHHHH with v[i] the letter and
+// returns the index of its last byte.
+func psrAnsiUnicode(b *strings.Builder, v string, i int) int {
+	maxLen := 4
+	if v[i] == 'U' {
+		maxLen = 8
+	}
+	j := i + 1
+	var r rune
+	for j < len(v) && j <= i+maxLen && isHex(v[j]) && r <= utf8.MaxRune {
+		r = r*16 + hexVal(v[j])
+		j++
+	}
+	if j > i+1 && r <= utf8.MaxRune {
+		b.WriteRune(r)
+	}
+	return j - 1
+}
+
+// psrAnsiOctal decodes \NNN (one to three octal digits starting at v[i]) and
+// returns the index of its last byte.
+func psrAnsiOctal(b *strings.Builder, v string, i int) int {
+	j := i
+	for j < len(v) && j < i+3 && v[j] >= '0' && v[j] <= '7' {
+		j++
+	}
+	if n, err := strconv.ParseUint(v[i:j], 8, 8); err == nil {
+		b.WriteByte(byte(n))
+	}
+	return j - 1
 }
 
 func hexVal(c byte) rune {

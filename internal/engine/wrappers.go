@@ -74,43 +74,9 @@ func (s *shellEval) unwrap(name string, args []cmdArg, _ *stdinInfo) (inner, own
 	if !ok {
 		return nil, nil, false
 	}
-	i := 0
-loop:
-	for i < len(args) {
-		t, static := args[i].text()
-		switch {
-		case !static:
-			break loop
-		case t == "--":
-			i++
-			break loop
-		case !strings.HasPrefix(t, "-") || t == "-":
-			break loop
-		case strings.HasPrefix(t, "--"):
-			if name == "sudo" && (t == "--edit" || t == "--list" || t == "--validate") {
-				return nil, args, true
-			}
-			if !strings.Contains(t, "=") && spec.long[t] {
-				i += 2
-				continue
-			}
-			i++
-		default:
-			letters := t[1:]
-			if spec.noExec != "" && strings.ContainsAny(letters, spec.noExec) {
-				return nil, args, true
-			}
-			consumed := 1
-			for j, l := range letters {
-				if strings.ContainsRune(spec.short, l) {
-					if j == len(letters)-1 {
-						consumed = 2
-					}
-					break
-				}
-			}
-			i += consumed
-		}
+	i, noExec := cmrWrapOptsEnd(name, spec, args)
+	if noExec {
+		return nil, args, true
 	}
 	i += spec.positional
 	if i > len(args) {
@@ -120,6 +86,54 @@ loop:
 		inner = args[i:]
 	}
 	return inner, args[:i], true
+}
+
+// cmrWrapOptsEnd returns the index of the first argument after the options
+// of the wrapper name (per spec). noExec is true when an option means the
+// wrapper runs no command (sudo -l, --edit, ...).
+func cmrWrapOptsEnd(name string, spec wrapSpec, args []cmdArg) (i int, noExec bool) {
+	for i < len(args) {
+		t, static := args[i].text()
+		switch {
+		case !static:
+			return i, false
+		case t == "--":
+			return i + 1, false
+		case !strings.HasPrefix(t, "-") || t == "-":
+			return i, false
+		case strings.HasPrefix(t, "--"):
+			if name == "sudo" && (t == "--edit" || t == "--list" || t == "--validate") {
+				return i, true
+			}
+			if !strings.Contains(t, "=") && spec.long[t] {
+				i += 2
+				continue
+			}
+			i++
+		default:
+			letters := t[1:]
+			if spec.noExec != "" && strings.ContainsAny(letters, spec.noExec) {
+				return i, true
+			}
+			i += cmrShortConsumed(spec, letters)
+		}
+	}
+	return i, false
+}
+
+// cmrShortConsumed returns how many arguments a short-option cluster
+// (letters, without the dash) consumes: 2 when its first value-taking
+// option is its last letter (the value is the next argument), else 1.
+func cmrShortConsumed(spec wrapSpec, letters string) int {
+	for j, l := range letters {
+		if strings.ContainsRune(spec.short, l) {
+			if j == len(letters)-1 {
+				return 2
+			}
+			return 1
+		}
+	}
+	return 1
 }
 
 // secretRunnerSubs are the subcommands of secret managers that run a
@@ -138,35 +152,10 @@ func unwrapSecretRunner(name string, args []cmdArg) (inner, own []cmdArg, ok boo
 	}
 	i := 0
 	if name == "dotenv" {
-		// python-dotenv: dotenv [-f FILE] run CMD
-		for i < len(args) {
-			t, ok := args[i].text()
-			if !ok || !strings.HasPrefix(t, "-") {
-				break
-			}
-			if t == "-f" || t == "--file" || t == "-e" || t == "-v" || t == "-c" {
-				i++
-			}
-			i++
-		}
-		if i < len(args) && args[i].textOr() == "run" {
-			i++
-		} else {
-			i = 0
-		}
+		i = cmrDotenvRunStart(args)
 	}
 	if name != "dotenv" && name != "envchain" {
-		// skip to the run/exec subcommand
-		for i < len(args) {
-			t, _ := args[i].text()
-			i++
-			if secretRunnerSubs[t] {
-				break
-			}
-		}
-		if name == "direnv" || name == "aws-vault" || name == "envchain" || name == "chamber" {
-			i++ // direnv exec DIR, aws-vault exec PROFILE
-		}
+		i = cmrSecretSubStart(name, args, i)
 	}
 	for i < len(args) {
 		t, ok := args[i].text()
@@ -179,6 +168,43 @@ func unwrapSecretRunner(name string, args []cmdArg) (inner, own []cmdArg, ok boo
 		return nil, args, true
 	}
 	return args[i:], args[:i], true
+}
+
+// cmrDotenvRunStart returns the index of the command in python-dotenv's
+// `dotenv [-f FILE] run CMD`, or 0 when the arguments are not in that form.
+func cmrDotenvRunStart(args []cmdArg) int {
+	i := 0
+	for i < len(args) {
+		t, ok := args[i].text()
+		if !ok || !strings.HasPrefix(t, "-") {
+			break
+		}
+		if t == "-f" || t == "--file" || t == "-e" || t == "-v" || t == "-c" {
+			i++
+		}
+		i++
+	}
+	if i < len(args) && args[i].textOr() == "run" {
+		return i + 1
+	}
+	return 0
+}
+
+// cmrSecretSubStart skips, from index i, to just after the run/exec
+// subcommand of a secret manager (and the directory or profile operand of
+// direnv, aws-vault, envchain and chamber) and returns the new index.
+func cmrSecretSubStart(name string, args []cmdArg, i int) int {
+	for i < len(args) {
+		t, _ := args[i].text()
+		i++
+		if secretRunnerSubs[t] {
+			break
+		}
+	}
+	if name == "direnv" || name == "aws-vault" || name == "envchain" || name == "chamber" {
+		i++ // direnv exec DIR, aws-vault exec PROFILE
+	}
+	return i
 }
 
 // containerEnv: `docker run -e NAME` (no value) forwards the variable from
@@ -346,10 +372,50 @@ func (s *shellEval) unwrapWatch(args []cmdArg) (inner, own []cmdArg, ok bool) {
 
 // xargsCommand handles `producer | xargs [opts] cmd args`.
 func (s *shellEval) xargsCommand(args []cmdArg, stdin *stdinInfo) {
+	o := cmrParseXargsOpts(args)
+	i := o.end
+	s.checkArgs("xargs", o.own)
+	if i > len(args) {
+		i = len(args)
+	}
+	inner := append([]cmdArg(nil), args[i:]...)
+	if len(inner) == 0 {
+		inner = []cmdArg{litArg("echo")}
+	}
+	var stdinArgs []cmdArg
+	if o.fromFile {
+		stdinArgs = []cmdArg{dynArg()}
+	} else {
+		stdinArgs = stdinWords(stdin)
+	}
+	if o.replace != "" {
+		// The inner command may be a shell whose -c text embeds the
+		// replacement: make sure it is still analysed.
+		cmrXargsReplace(inner, stdinArgs, o.replace)
+	} else {
+		inner = append(inner, stdinArgs...)
+	}
+	s.processCommand(inner, nil)
+}
+
+// cmrXargsOpts are the options of an xargs command.
+type cmrXargsOpts struct {
+	end      int      // index of the first argument after the options
+	replace  string   // -I/-i replacement string
+	fromFile bool     // -a/--arg-file: the input comes from a file
+	own      []cmdArg // xargs's own arguments
+}
+
+// cmrXargsValueOpt reports whether t is an xargs option that takes the next
+// argument as its value and is otherwise ignored.
+func cmrXargsValueOpt(t string) bool {
+	return t == "-n" || t == "-L" || t == "-P" || t == "-s" || t == "-d" || t == "-E" || t == "--max-args" || t == "--max-procs" || t == "--delimiter" || t == "--max-lines" || t == "--max-chars" || t == "--eof"
+}
+
+// cmrParseXargsOpts parses the options of `xargs [opts] cmd args`.
+func cmrParseXargsOpts(args []cmdArg) cmrXargsOpts {
+	var o cmrXargsOpts
 	i := 0
-	replace := ""
-	fromFile := false
-	var own []cmdArg
 	for i < len(args) {
 		t, static := args[i].text()
 		if !static || !strings.HasPrefix(t, "-") || t == "-" {
@@ -361,75 +427,61 @@ func (s *shellEval) xargsCommand(args []cmdArg, stdin *stdinInfo) {
 		}
 		switch {
 		case t == "-I" && i+1 < len(args):
-			replace, _ = args[i+1].text()
-			own = append(own, args[i])
+			o.replace, _ = args[i+1].text()
+			o.own = append(o.own, args[i])
 			i += 2
 			continue
 		case strings.HasPrefix(t, "-I"):
-			replace = t[2:]
+			o.replace = t[2:]
 		case t == "-i" || t == "--replace":
-			replace = "{}"
+			o.replace = "{}"
 		case strings.HasPrefix(t, "-i"):
-			replace = t[2:]
+			o.replace = t[2:]
 		case strings.HasPrefix(t, "--replace="):
-			replace = strings.TrimPrefix(t, "--replace=")
+			o.replace = strings.TrimPrefix(t, "--replace=")
 		case t == "-a" || t == "--arg-file":
-			fromFile = true
-			own = append(own, args[i])
+			o.fromFile = true
+			o.own = append(o.own, args[i])
 			if i+1 < len(args) {
-				own = append(own, args[i+1])
+				o.own = append(o.own, args[i+1])
 			}
 			i += 2
 			continue
 		case strings.HasPrefix(t, "--arg-file=") || (strings.HasPrefix(t, "-a") && len(t) > 2):
-			fromFile = true
-		case t == "-n" || t == "-L" || t == "-P" || t == "-s" || t == "-d" || t == "-E" || t == "--max-args" || t == "--max-procs" || t == "--delimiter" || t == "--max-lines" || t == "--max-chars" || t == "--eof":
-			own = append(own, args[i])
+			o.fromFile = true
+		case cmrXargsValueOpt(t):
+			o.own = append(o.own, args[i])
 			i += 2
 			continue
 		}
-		own = append(own, args[i])
+		o.own = append(o.own, args[i])
 		i++
 	}
-	s.checkArgs("xargs", own)
-	if i > len(args) {
-		i = len(args)
+	o.end = i
+	return o
+}
+
+// cmrXargsReplace substitutes, in place in inner, every alternative of the
+// stdin words for the replacement string replace.
+func cmrXargsReplace(inner, stdinArgs []cmdArg, replace string) {
+	var all []string
+	for _, sa := range stdinArgs {
+		all = append(all, sa.alts...)
 	}
-	inner := append([]cmdArg(nil), args[i:]...)
-	if len(inner) == 0 {
-		inner = []cmdArg{litArg("echo")}
-	}
-	var stdinArgs []cmdArg
-	if fromFile {
-		stdinArgs = []cmdArg{dynArg()}
-	} else {
-		stdinArgs = stdinWords(stdin)
-	}
-	if replace != "" {
-		var all []string
-		for _, sa := range stdinArgs {
-			all = append(all, sa.alts...)
-		}
-		rep := escapeLit(replace)
-		for k, a := range inner {
-			var alts []string
-			for _, alt := range a.alts {
-				if !strings.Contains(alt, rep) {
-					alts = append(alts, alt)
-					continue
-				}
-				for _, v := range all {
-					alts = append(alts, strings.ReplaceAll(alt, rep, v))
-				}
+	rep := escapeLit(replace)
+	for k, a := range inner {
+		var alts []string
+		for _, alt := range a.alts {
+			if !strings.Contains(alt, rep) {
+				alts = append(alts, alt)
+				continue
 			}
-			inner[k] = cmdArg{alts: dedupe(alts)}
+			for _, v := range all {
+				alts = append(alts, strings.ReplaceAll(alt, rep, v))
+			}
 		}
-		// The inner command may be a shell whose -c text embeds the
-		// replacement: make sure it is still analysed.
-	} else {
-		inner = append(inner, stdinArgs...)
+		inner[k] = cmdArg{alts: dedupe(alts)}
 	}
-	s.processCommand(inner, nil)
 }
 
 // stdinWords returns the words a pipeline producer writes, as arguments:
@@ -539,25 +591,7 @@ func (s *shellEval) findCommand(args []cmdArg, _ *stdinInfo) {
 		t, _ := args[i].text()
 		switch t {
 		case "-exec", "-execdir", "-ok", "-okdir":
-			j := i + 1
-			var inner []cmdArg
-			for ; j < len(args); j++ {
-				e, _ := args[j].text()
-				if e == ";" || e == "+" {
-					break
-				}
-				var alts []string
-				for _, alt := range args[j].alts {
-					if strings.Contains(alt, "{}") {
-						for _, o := range outputs {
-							alts = append(alts, strings.ReplaceAll(alt, "{}", o))
-						}
-						continue
-					}
-					alts = append(alts, alt)
-				}
-				inner = append(inner, cmdArg{alts: dedupe(alts)})
-			}
+			inner, j := cmrFindExecInner(args, i+1, outputs)
 			s.processCommand(inner, nil)
 			i = j
 		case "-delete":
@@ -572,6 +606,37 @@ func (s *shellEval) findCommand(args []cmdArg, _ *stdinInfo) {
 			}
 		}
 	}
+}
+
+// cmrFindExecInner returns the command of a find -exec/-ok action whose
+// words start at args[j], with {} replaced by the paths find prints
+// (outputs), and the index of its terminating ';' or '+' (or len(args)).
+func cmrFindExecInner(args []cmdArg, j int, outputs []string) ([]cmdArg, int) {
+	var inner []cmdArg
+	for ; j < len(args); j++ {
+		e, _ := args[j].text()
+		if e == ";" || e == "+" {
+			break
+		}
+		inner = append(inner, cmdArg{alts: dedupe(cmrFindSubstAlts(args[j].alts, outputs))})
+	}
+	return inner, j
+}
+
+// cmrFindSubstAlts expands every alternative containing {} into one
+// alternative per find output; other alternatives are kept.
+func cmrFindSubstAlts(in, outputs []string) []string {
+	var alts []string
+	for _, alt := range in {
+		if strings.Contains(alt, "{}") {
+			for _, o := range outputs {
+				alts = append(alts, strings.ReplaceAll(alt, "{}", o))
+			}
+			continue
+		}
+		alts = append(alts, alt)
+	}
+	return alts
 }
 
 func findStarts(args []cmdArg) (starts []cmdArg, rest int) {

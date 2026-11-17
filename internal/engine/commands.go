@@ -1021,99 +1021,149 @@ func stdinCodeRunner(argv []string) bool {
 	args := argv[1:]
 	switch {
 	case shells[name] || name == "source" || name == ".":
-		for i := 0; i < len(args); i++ {
-			t := args[i]
-			switch {
-			case t == "-":
-				return true
-			case t == "--":
-				return i+1 >= len(args) || stdinPaths[args[i+1]]
-			case t == "--rcfile" || t == "--init-file" || t == "--init-command":
-				i++
-			case strings.HasPrefix(t, "--"):
-			case len(t) > 1 && (t[0] == '-' || t[0] == '+'):
-				if strings.ContainsRune(t[1:], 'c') {
-					return false
-				}
-				if strings.ContainsRune(t[1:], 's') {
-					return true
-				}
-				if strings.ContainsAny(t[1:], "oO") {
-					i++
-				}
-			default:
-				return stdinPaths[t]
-			}
-		}
-		return name != "source" && name != "."
+		return cmrShellReadsStdin(name, args)
 	case name == "pwsh" || name == "powershell":
-		for i := 0; i < len(args); i++ {
-			l := strings.ToLower(args[i])
-			switch {
-			case l == "-":
-				return true
-			case isAbbrev(l, "-command", 2) || isAbbrev(l, "-file", 2):
-				return i+1 < len(args) && args[i+1] == "-"
-			case isAbbrev(l, "-executionpolicy", 3) || l == "-ep" || isAbbrev(l, "-workingdirectory", 3) || l == "-wd" ||
-				isAbbrev(l, "-outputformat", 3) || l == "-of" || isAbbrev(l, "-inputformat", 3) || l == "-if" ||
-				isAbbrev(l, "-windowstyle", 3) || isAbbrev(l, "-settingsfile", 3) || isAbbrev(l, "-configurationname", 4):
-				i++
-			case strings.HasPrefix(l, "-"):
-			default:
-				return false // a script file or command text
-			}
-		}
-		return true
+		return cmrPwshReadsStdin(args)
 	case name == "sudo" || name == "doas":
-		shell := false
-		for i := 0; i < len(args); i++ {
-			t := args[i]
-			switch {
-			case t == "--shell" || t == "--login":
-				shell = true
-			case strings.HasPrefix(t, "--"):
-				if !strings.Contains(t, "=") && wrapSpecs["sudo"].long[t] {
-					i++
-				}
-			case len(t) > 1 && t[0] == '-':
-				for j, r := range t[1:] {
-					if r == 's' || r == 'i' {
-						shell = true
-					}
-					if strings.ContainsRune("ugCDhprtTU", r) {
-						if j == len(t)-2 {
-							i++
-						}
-						break
-					}
-				}
-			default:
-				return false // runs a command (matched at the next level)
-			}
-		}
-		return shell
+		return cmrSudoReadsStdin(args)
 	case name == "su":
-		for i := 0; i < len(args); i++ {
-			t := args[i]
-			switch {
-			case t == "--command" || strings.HasPrefix(t, "--command="):
-				return false
-			case t == "-s" || t == "--shell" || t == "-g" || t == "--group" || t == "-G" || t == "--supp-group":
-				i++
-			case len(t) > 1 && t[0] == '-' && t[1] != '-' && strings.ContainsRune(t, 'c'):
-				return false
-			}
-		}
-		return true
+		return cmrSuReadsStdin(args)
 	case stdinInterpreters[name]:
-		for _, t := range args {
-			if !stdinPaths[t] {
-				return false
-			}
-		}
-		return true
+		return cmrInterpReadsStdin(args)
 	}
 	return false
+}
+
+// cmrShellReadsStdin reports whether a shell (or source/.) with arguments
+// args reads its script from stdin: -, -s, a stdin path or no script.
+func cmrShellReadsStdin(name string, args []string) bool {
+	for i := 0; i < len(args); i++ {
+		t := args[i]
+		switch {
+		case t == "-":
+			return true
+		case t == "--":
+			return i+1 >= len(args) || stdinPaths[args[i+1]]
+		case t == "--rcfile" || t == "--init-file" || t == "--init-command":
+			i++
+		case strings.HasPrefix(t, "--"):
+		case len(t) > 1 && (t[0] == '-' || t[0] == '+'):
+			if strings.ContainsRune(t[1:], 'c') {
+				return false
+			}
+			if strings.ContainsRune(t[1:], 's') {
+				return true
+			}
+			if strings.ContainsAny(t[1:], "oO") {
+				i++
+			}
+		default:
+			return stdinPaths[t]
+		}
+	}
+	return name != "source" && name != "."
+}
+
+// cmrPwshValueOpt reports whether the lower-cased pwsh parameter l takes a
+// separate value.
+func cmrPwshValueOpt(l string) bool {
+	return isAbbrev(l, "-executionpolicy", 3) || l == "-ep" || isAbbrev(l, "-workingdirectory", 3) || l == "-wd" ||
+		isAbbrev(l, "-outputformat", 3) || l == "-of" || isAbbrev(l, "-inputformat", 3) || l == "-if" ||
+		isAbbrev(l, "-windowstyle", 3) || isAbbrev(l, "-settingsfile", 3) || isAbbrev(l, "-configurationname", 4)
+}
+
+// cmrPwshReadsStdin reports whether pwsh/powershell with arguments args
+// reads its commands from stdin: no script or -Command -.
+func cmrPwshReadsStdin(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		l := strings.ToLower(args[i])
+		switch {
+		case l == "-":
+			return true
+		case isAbbrev(l, "-command", 2) || isAbbrev(l, "-file", 2):
+			return i+1 < len(args) && args[i+1] == "-"
+		case cmrPwshValueOpt(l):
+			i++
+		case strings.HasPrefix(l, "-"):
+		default:
+			return false // a script file or command text
+		}
+	}
+	return true
+}
+
+// cmrSudoShortOpts scans the sudo/doas short-option cluster t; it reports
+// whether it selects a shell (-s/-i) and whether its last letter takes the
+// next argument as its value.
+func cmrSudoShortOpts(t string) (shell, takesNext bool) {
+	for j, r := range t[1:] {
+		if r == 's' || r == 'i' {
+			shell = true
+		}
+		if strings.ContainsRune("ugCDhprtTU", r) {
+			if j == len(t)-2 {
+				takesNext = true
+			}
+			break
+		}
+	}
+	return shell, takesNext
+}
+
+// cmrSudoReadsStdin reports whether sudo/doas with arguments args starts a
+// shell (-s, -i, --shell, --login) without a command.
+func cmrSudoReadsStdin(args []string) bool {
+	shell := false
+	for i := 0; i < len(args); i++ {
+		t := args[i]
+		switch {
+		case t == "--shell" || t == "--login":
+			shell = true
+		case strings.HasPrefix(t, "--"):
+			if !strings.Contains(t, "=") && wrapSpecs["sudo"].long[t] {
+				i++
+			}
+		case len(t) > 1 && t[0] == '-':
+			sh, takesNext := cmrSudoShortOpts(t)
+			if sh {
+				shell = true
+			}
+			if takesNext {
+				i++
+			}
+		default:
+			return false // runs a command (matched at the next level)
+		}
+	}
+	return shell
+}
+
+// cmrSuReadsStdin reports whether su with arguments args starts a shell
+// without a command (-c/--command).
+func cmrSuReadsStdin(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		t := args[i]
+		switch {
+		case t == "--command" || strings.HasPrefix(t, "--command="):
+			return false
+		case t == "-s" || t == "--shell" || t == "-g" || t == "--group" || t == "-G" || t == "--supp-group":
+			i++
+		case len(t) > 1 && t[0] == '-' && t[1] != '-' && strings.ContainsRune(t, 'c'):
+			return false
+		}
+	}
+	return true
+}
+
+// cmrInterpReadsStdin reports whether an interpreter with arguments args
+// runs a program from stdin: every argument is a stdin path (or none).
+func cmrInterpReadsStdin(args []string) bool {
+	for _, t := range args {
+		if !stdinPaths[t] {
+			return false
+		}
+	}
+	return true
 }
 
 // scriptOperand returns the script file a shell, interpreter or source
@@ -1153,13 +1203,10 @@ func downloadTargets(argv []string) []string {
 	if name != "curl" && name != "wget" {
 		return nil
 	}
-	outLetter := byte('o')
-	if name == "wget" {
-		outLetter = 'O'
+	d := &cmrDownload{curl: name == "curl", outLetter: 'o', remoteName: name == "wget"}
+	if !d.curl {
+		d.outLetter = 'O'
 	}
-	var outs, urls []string
-	remoteName := name == "wget"
-	prefix := ""
 	for i := 1; i < len(argv); i++ {
 		t := argv[i]
 		next := func() string {
@@ -1169,59 +1216,109 @@ func downloadTargets(argv []string) []string {
 			}
 			return ""
 		}
-		switch {
-		case strings.Contains(t, "://"):
-			urls = append(urls, t)
-		case name == "curl" && (t == "--output" || t == "-o"):
-			outs = append(outs, next())
-		case name == "curl" && strings.HasPrefix(t, "--output="):
-			outs = append(outs, t[len("--output="):])
-		case name == "curl" && (t == "--remote-name" || t == "--remote-name-all"):
-			remoteName = true
-		case name == "wget" && (t == "--output-document" || t == "-O"):
-			outs = append(outs, next())
-			remoteName = false
-		case name == "wget" && strings.HasPrefix(t, "--output-document="):
-			outs = append(outs, t[len("--output-document="):])
-			remoteName = false
-		case name == "wget" && (t == "--directory-prefix" || t == "-P"):
-			prefix = next()
-		case name == "wget" && strings.HasPrefix(t, "--directory-prefix="):
-			prefix = t[len("--directory-prefix="):]
-		case len(t) > 1 && t[0] == '-' && t[1] != '-':
-			if j := strings.IndexByte(t, outLetter); j > 0 {
-				v := t[j+1:]
-				if v == "" {
-					v = next()
-				}
-				outs = append(outs, v)
-				if name == "wget" {
-					remoteName = false
-				}
-			} else if name == "curl" && strings.ContainsRune(t, 'O') {
-				remoteName = true
-			}
-		}
+		d.cmrArg(t, next)
 	}
-	if remoteName {
-		for _, u := range urls {
-			u, _, _ = strings.Cut(u, "?")
-			u, _, _ = strings.Cut(u, "#")
-			if b := path.Base(u); b != "" && b != "/" && b != "." && !strings.Contains(b, ":") {
-				if prefix != "" {
-					b = prefix + "/" + b
-				}
-				outs = append(outs, b)
-			}
-		}
+	if d.remoteName {
+		d.cmrAddRemoteNames()
 	}
 	var res []string
-	for _, o := range outs {
+	for _, o := range d.outs {
 		if o != "" && o != "-" && !strings.ContainsAny(o, "\x00\x01") {
 			res = append(res, path.Clean(o))
 		}
 	}
 	return res
+}
+
+// cmrDownload accumulates what downloadTargets learns from curl/wget
+// arguments.
+type cmrDownload struct {
+	curl       bool // curl (else wget)
+	outLetter  byte // the short option naming the output file
+	outs, urls []string
+	remoteName bool   // the file is named after the URL
+	prefix     string // wget --directory-prefix
+}
+
+// cmrArg records one curl/wget argument t; next consumes and returns the
+// following argument.
+func (d *cmrDownload) cmrArg(t string, next func() string) {
+	switch {
+	case strings.Contains(t, "://"):
+		d.urls = append(d.urls, t)
+	case d.curl && d.cmrCurlLong(t, next):
+	case !d.curl && d.cmrWgetLong(t, next):
+	case len(t) > 1 && t[0] == '-' && t[1] != '-':
+		d.cmrShort(t, next)
+	}
+}
+
+// cmrCurlLong handles curl's -o/--output and --remote-name options; it
+// reports whether t was one of them.
+func (d *cmrDownload) cmrCurlLong(t string, next func() string) bool {
+	switch {
+	case t == "--output" || t == "-o":
+		d.outs = append(d.outs, next())
+	case strings.HasPrefix(t, "--output="):
+		d.outs = append(d.outs, t[len("--output="):])
+	case t == "--remote-name" || t == "--remote-name-all":
+		d.remoteName = true
+	default:
+		return false
+	}
+	return true
+}
+
+// cmrWgetLong handles wget's -O/--output-document and -P/--directory-prefix
+// options; it reports whether t was one of them.
+func (d *cmrDownload) cmrWgetLong(t string, next func() string) bool {
+	switch {
+	case t == "--output-document" || t == "-O":
+		d.outs = append(d.outs, next())
+		d.remoteName = false
+	case strings.HasPrefix(t, "--output-document="):
+		d.outs = append(d.outs, t[len("--output-document="):])
+		d.remoteName = false
+	case t == "--directory-prefix" || t == "-P":
+		d.prefix = next()
+	case strings.HasPrefix(t, "--directory-prefix="):
+		d.prefix = t[len("--directory-prefix="):]
+	default:
+		return false
+	}
+	return true
+}
+
+// cmrShort handles a short-option cluster: the output letter with its
+// value, or curl's -O.
+func (d *cmrDownload) cmrShort(t string, next func() string) {
+	if j := strings.IndexByte(t, d.outLetter); j > 0 {
+		v := t[j+1:]
+		if v == "" {
+			v = next()
+		}
+		d.outs = append(d.outs, v)
+		if !d.curl {
+			d.remoteName = false
+		}
+	} else if d.curl && strings.ContainsRune(t, 'O') {
+		d.remoteName = true
+	}
+}
+
+// cmrAddRemoteNames adds the file names derived from the URLs' last path
+// segment, under the directory prefix.
+func (d *cmrDownload) cmrAddRemoteNames() {
+	for _, u := range d.urls {
+		u, _, _ = strings.Cut(u, "?")
+		u, _, _ = strings.Cut(u, "#")
+		if b := path.Base(u); b != "" && b != "/" && b != "." && !strings.Contains(b, ":") {
+			if d.prefix != "" {
+				b = d.prefix + "/" + b
+			}
+			d.outs = append(d.outs, b)
+		}
+	}
 }
 
 // commandPrepass runs before the statements of a script are visited. It
@@ -1234,105 +1331,140 @@ func (s *shellEval) commandPrepass(root syntax.Node) {
 	if !prepassNeeded(root) {
 		return
 	}
-	type runner struct {
-		key   string
-		forms []string
-	}
-	downloads := false
-	var runs []runner
-	var indirect [][][]string
+	p := &cmrPrepass{}
 	s.walk(root, func(n syntax.Node) bool {
 		call, ok := n.(*syntax.CallExpr)
 		if !ok || len(call.Args) == 0 {
 			return true
 		}
 		argvs := s.callArgv(call)
-		for _, argv := range argvs {
-			for _, level := range unwrapLevels(argv) {
-				if len(level) == 0 {
-					continue
-				}
-				recordGitConfigAlias(level, s.gitAliases)
-				if len(downloadTargets(level)) > 0 {
-					downloads = true
-				}
-				if op := scriptOperand(level); op != "" {
-					runs = append(runs, runner{key: path.Clean(op), forms: []string{cmdBase(level[0]), "sh", "bash"}})
-				} else if strings.Contains(level[0], "/") {
-					runs = append(runs, runner{key: path.Clean(level[0]), forms: []string{"sh", "bash"}})
-				}
-			}
-		}
-		// Process substitution as the script operand.
-		for k := 1; k < len(call.Args); k++ {
-			w := call.Args[k]
-			if len(w.Parts) != 1 {
-				continue
-			}
-			ps, ok := w.Parts[0].(*syntax.ProcSubst)
-			if !ok || ps.Op != syntax.CmdIn || len(ps.Stmts) != 1 {
-				continue
-			}
-			var inner [][]string
-			for _, st := range s.flattenPipe(ps.Stmts[0], nil) {
-				inner = append(inner, s.stageForms(st))
-			}
-			var runForms []string
-			for _, argv := range argvs {
-				if k >= len(argv) {
-					continue
-				}
-				rest := append(append([]string(nil), argv[:k]...), argv[k+1:]...)
-				opsOnly := true
-				for _, t := range argv[1:k] {
-					if !strings.HasPrefix(t, "-") {
-						opsOnly = false
-					}
-				}
-				if opsOnly {
-					for _, level := range unwrapLevels(rest) {
-						if stdinCodeRunner(level) {
-							runForms = append(runForms, s.argvStageForms(rest)...)
-							break
-						}
-					}
-				}
-			}
-			if len(runForms) > 0 {
-				indirect = append(indirect, append(inner, dedupe(runForms)))
-			}
-		}
+		s.cmrPrepassLevels(argvs, p)
+		s.cmrProcSubstRuns(call, argvs, p)
 		return true
 	})
 	// Download-then-run: the downloader's forms are computed only when a
 	// later command runs the downloaded file.
-	if downloads && len(runs) > 0 {
-		dlForms := map[string][]string{}
-		s.walk(root, func(n syntax.Node) bool {
-			call, ok := n.(*syntax.CallExpr)
-			if !ok || len(call.Args) == 0 {
-				return true
+	if p.downloads && len(p.runs) > 0 {
+		s.cmrDownloadThenRun(root, p)
+	}
+	for _, stages := range p.indirect {
+		applyPatterns(s.e.policy, s.c, s.sec.work, s.req.Home, nil, stages)
+	}
+}
+
+// cmrPrepassRunner is a command that runs a file: key is the cleaned file
+// path, forms the stage forms of the runner.
+type cmrPrepassRunner struct {
+	key   string
+	forms []string
+}
+
+// cmrPrepass accumulates what commandPrepass collects over a script.
+type cmrPrepass struct {
+	downloads bool               // some command downloads a file
+	runs      []cmrPrepassRunner // commands that run a file
+	indirect  [][][]string       // pipelines to match '|' patterns against
+}
+
+// cmrPrepassLevels visits every wrapper level of the argvs of one call:
+// it records git aliases, notes downloads and collects file runners.
+func (s *shellEval) cmrPrepassLevels(argvs [][]string, p *cmrPrepass) {
+	for _, argv := range argvs {
+		for _, level := range unwrapLevels(argv) {
+			if len(level) == 0 {
+				continue
 			}
-			for _, argv := range s.callArgv(call) {
-				for _, level := range unwrapLevels(argv) {
-					if len(level) == 0 {
-						continue
-					}
-					for _, k := range downloadTargets(level) {
-						dlForms[k] = append(dlForms[k], s.argvStageForms(argv)...)
-					}
-				}
+			recordGitConfigAlias(level, s.gitAliases)
+			if len(downloadTargets(level)) > 0 {
+				p.downloads = true
 			}
-			return true
-		})
-		for _, r := range runs {
-			if f, ok := dlForms[r.key]; ok {
-				indirect = append(indirect, [][]string{dedupe(f), r.forms})
+			if op := scriptOperand(level); op != "" {
+				p.runs = append(p.runs, cmrPrepassRunner{key: path.Clean(op), forms: []string{cmdBase(level[0]), "sh", "bash"}})
+			} else if strings.Contains(level[0], "/") {
+				p.runs = append(p.runs, cmrPrepassRunner{key: path.Clean(level[0]), forms: []string{"sh", "bash"}})
 			}
 		}
 	}
-	for _, stages := range indirect {
-		applyPatterns(s.e.policy, s.c, s.sec.work, s.req.Home, nil, stages)
+}
+
+// cmrProcSubstRuns adds to p.indirect the pipelines formed by an input
+// process substitution used as the script operand of call.
+func (s *shellEval) cmrProcSubstRuns(call *syntax.CallExpr, argvs [][]string, p *cmrPrepass) {
+	for k := 1; k < len(call.Args); k++ {
+		w := call.Args[k]
+		if len(w.Parts) != 1 {
+			continue
+		}
+		ps, ok := w.Parts[0].(*syntax.ProcSubst)
+		if !ok || ps.Op != syntax.CmdIn || len(ps.Stmts) != 1 {
+			continue
+		}
+		var inner [][]string
+		for _, st := range s.flattenPipe(ps.Stmts[0], nil) {
+			inner = append(inner, s.stageForms(st))
+		}
+		var runForms []string
+		for _, argv := range argvs {
+			runForms = append(runForms, s.cmrProcSubstRunForms(argv, k)...)
+		}
+		if len(runForms) > 0 {
+			p.indirect = append(p.indirect, append(inner, dedupe(runForms)))
+		}
+	}
+}
+
+// cmrProcSubstRunForms returns the stage forms of argv without its k-th
+// word when that word (a process substitution) is preceded only by options
+// and the rest of argv runs code from stdin at some wrapper level.
+func (s *shellEval) cmrProcSubstRunForms(argv []string, k int) []string {
+	if k >= len(argv) {
+		return nil
+	}
+	rest := append(append([]string(nil), argv[:k]...), argv[k+1:]...)
+	for _, t := range argv[1:k] {
+		if !strings.HasPrefix(t, "-") {
+			return nil
+		}
+	}
+	for _, level := range unwrapLevels(rest) {
+		if stdinCodeRunner(level) {
+			return s.argvStageForms(rest)
+		}
+	}
+	return nil
+}
+
+// cmrDownloadThenRun adds to p.indirect a downloader-to-runner pipeline for
+// every runner in p.runs whose file some command in root downloads.
+func (s *shellEval) cmrDownloadThenRun(root syntax.Node, p *cmrPrepass) {
+	dlForms := map[string][]string{}
+	s.walk(root, func(n syntax.Node) bool {
+		call, ok := n.(*syntax.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		for _, argv := range s.callArgv(call) {
+			s.cmrAddDownloadForms(argv, dlForms)
+		}
+		return true
+	})
+	for _, r := range p.runs {
+		if f, ok := dlForms[r.key]; ok {
+			p.indirect = append(p.indirect, [][]string{dedupe(f), r.forms})
+		}
+	}
+}
+
+// cmrAddDownloadForms maps every file argv downloads (at any wrapper level)
+// to argv's stage forms in dlForms.
+func (s *shellEval) cmrAddDownloadForms(argv []string, dlForms map[string][]string) {
+	for _, level := range unwrapLevels(argv) {
+		if len(level) == 0 {
+			continue
+		}
+		for _, k := range downloadTargets(level) {
+			dlForms[k] = append(dlForms[k], s.argvStageForms(argv)...)
+		}
 	}
 }
 
@@ -1408,30 +1540,15 @@ func unwrapLevels(argv []string) [][]string {
 	for depth := 0; depth < 8 && len(argv) > 0; depth++ {
 		name := cmdBase(argv[0])
 		args := argv[1:]
-		i := 0
+		var i int
 		if name == "env" {
-			for i < len(args) && (strings.HasPrefix(args[i], "-") || (strings.IndexByte(args[i], '=') > 0 && isIdent(args[i][:strings.IndexByte(args[i], '=')]))) {
-				if args[i] == "-u" || args[i] == "-C" {
-					i++
-				}
-				i++
-			}
+			i = cmrEnvSkip(args)
 		} else {
 			spec, ok := wrapSpecs[name]
 			if !ok {
 				break
 			}
-			for i < len(args) && strings.HasPrefix(args[i], "-") && args[i] != "-" {
-				if args[i] == "--" {
-					i++
-					break
-				}
-				if spec.long[args[i]] || (len(args[i]) == 2 && strings.ContainsRune(spec.short, rune(args[i][1]))) {
-					i++
-				}
-				i++
-			}
-			i += spec.positional
+			i = cmrWrapSkip(spec, args)
 		}
 		if i >= len(args) {
 			break
@@ -1440,4 +1557,34 @@ func unwrapLevels(argv []string) [][]string {
 		out = append(out, argv)
 	}
 	return out
+}
+
+// cmrEnvSkip returns the index in env's arguments args of the command env
+// runs, after its options and NAME=VALUE assignments.
+func cmrEnvSkip(args []string) int {
+	i := 0
+	for i < len(args) && (strings.HasPrefix(args[i], "-") || (strings.IndexByte(args[i], '=') > 0 && isIdent(args[i][:strings.IndexByte(args[i], '=')]))) {
+		if args[i] == "-u" || args[i] == "-C" {
+			i++
+		}
+		i++
+	}
+	return i
+}
+
+// cmrWrapSkip returns the index in a wrapper's arguments args of the
+// command it runs, after its options (per spec) and positional arguments.
+func cmrWrapSkip(spec wrapSpec, args []string) int {
+	i := 0
+	for i < len(args) && strings.HasPrefix(args[i], "-") && args[i] != "-" {
+		if args[i] == "--" {
+			i++
+			break
+		}
+		if spec.long[args[i]] || (len(args[i]) == 2 && strings.ContainsRune(spec.short, rune(args[i][1]))) {
+			i++
+		}
+		i++
+	}
+	return i + spec.positional
 }

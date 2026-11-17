@@ -51,253 +51,16 @@ func (t psTok) isWord() bool { return t.op == "" }
 // psTokenize splits PowerShell (or cmd) text into tokens. ok is false when a
 // quote or here-string is not terminated.
 func psTokenize(src string) (toks []psTok, ok bool) {
-	rs := []rune(src)
-	var cur strings.Builder
-	var subs []string
-	inWord := false
-	flush := func() {
-		if inWord {
-			toks = append(toks, psTok{text: cur.String(), subs: subs})
+	lx := &psrLexer{rs: []rune(src)}
+	for i := 0; i < len(lx.rs); {
+		next, good := lx.step(i)
+		if !good {
+			return lx.toks, false
 		}
-		cur.Reset()
-		subs = nil
-		inWord = false
+		i = next
 	}
-	emit := func(op string) {
-		flush()
-		toks = append(toks, psTok{op: op})
-	}
-	// readVar reads a variable reference starting at rs[i]=='$' and returns
-	// the placeholder text and the index after it.
-	readVar := func(i int) (string, int) {
-		if i+1 < len(rs) && rs[i+1] == '{' {
-			j := i + 2
-			for j < len(rs) && rs[j] != '}' {
-				j++
-			}
-			name := string(rs[i+2 : min(j, len(rs))])
-			return string(phStart) + strings.ToLower(name) + string(phEnd), min(j+1, len(rs))
-		}
-		j := i + 1
-		for j < len(rs) && (isWordRune(rs[j]) || rs[j] == ':' || rs[j] == '?' || rs[j] == '$' || rs[j] == '^') {
-			if rs[j] == ':' && (j+1 >= len(rs) || !isWordRune(rs[j+1])) {
-				break
-			}
-			j++
-			if j == i+2 && (rs[i+1] == '$' || rs[i+1] == '?' || rs[i+1] == '^') {
-				break
-			}
-		}
-		if j == i+1 {
-			return "$", j
-		}
-		return string(phStart) + strings.ToLower(string(rs[i+1:j])) + string(phEnd), j
-	}
-	readParen := func(i int) (string, int, bool) {
-		// rs[i] == '(' ; returns inner text and index after ')'
-		depth := 0
-		for j := i; j < len(rs); j++ {
-			switch rs[j] {
-			case '(':
-				depth++
-			case ')':
-				depth--
-				if depth == 0 {
-					return string(rs[i+1 : j]), j + 1, true
-				}
-			case '\'':
-				j++
-				for j < len(rs) && rs[j] != '\'' {
-					j++
-				}
-			case '"':
-				for j++; j < len(rs) && rs[j] != '"'; j++ {
-					if rs[j] == '`' {
-						j++
-					}
-				}
-			}
-		}
-		return "", len(rs), false
-	}
-	// readDQ reads a double-quoted body (after the opening quote) until the
-	// closing quote (or "@ for here-strings).
-	readDQ := func(i int, here bool) (int, bool) {
-		for i < len(rs) {
-			c := rs[i]
-			switch {
-			case here && c == '\n' && i+2 < len(rs) && rs[i+1] == '"' && rs[i+2] == '@':
-				return i + 3, true
-			case !here && c == '"':
-				if i+1 < len(rs) && rs[i+1] == '"' {
-					cur.WriteRune('"')
-					i += 2
-					continue
-				}
-				return i + 1, true
-			case c == '`' && i+1 < len(rs):
-				cur.WriteRune(rs[i+1])
-				i += 2
-			case c == '$' && i+1 < len(rs) && rs[i+1] == '(':
-				inner, next, ok := readParen(i + 1)
-				if !ok {
-					return len(rs), false
-				}
-				subs = append(subs, inner)
-				cur.WriteRune(dynAny)
-				i = next
-			case c == '$':
-				ph, next := readVar(i)
-				cur.WriteString(ph)
-				i = next
-			default:
-				cur.WriteRune(c)
-				i++
-			}
-		}
-		return i, false
-	}
-	ok = true
-	for i := 0; i < len(rs); {
-		c := rs[i]
-		switch {
-		case c == ' ' || c == '\t' || c == '\r':
-			flush()
-			i++
-		case c == '\n':
-			emit(";")
-			i++
-		case c == '#' && !inWord:
-			for i < len(rs) && rs[i] != '\n' {
-				i++
-			}
-		case c == '<' && i+1 < len(rs) && rs[i+1] == '#':
-			end := strings.Index(string(rs[i:]), "#>")
-			if end < 0 {
-				return toks, false
-			}
-			i += len([]rune(string(rs[i:])[:end+2]))
-		case c == '`':
-			if i+1 < len(rs) {
-				if rs[i+1] != '\n' {
-					cur.WriteRune(rs[i+1])
-					inWord = true
-				}
-				i += 2
-			} else {
-				i++
-			}
-		case c == '@' && i+1 < len(rs) && (rs[i+1] == '\'' || rs[i+1] == '"') && i+2 < len(rs) && (rs[i+2] == '\n' || rs[i+2] == '\r'):
-			inWord = true
-			if rs[i+1] == '\'' {
-				end := strings.Index(string(rs[i+2:]), "\n'@")
-				if end < 0 {
-					return toks, false
-				}
-				body := string(rs[i+2:])[:end]
-				cur.WriteString(strings.TrimLeft(body, "\r\n"))
-				i += 2 + len([]rune(string(rs[i+2:])[:end+3]))
-			} else {
-				next, good := readDQ(i+3, true)
-				if !good {
-					return toks, false
-				}
-				i = next
-			}
-		case c == '\'':
-			inWord = true
-			j := i + 1
-			closed := false
-			for j < len(rs) {
-				if rs[j] == '\'' {
-					if j+1 < len(rs) && rs[j+1] == '\'' {
-						cur.WriteRune('\'')
-						j += 2
-						continue
-					}
-					closed = true
-					j++
-					break
-				}
-				cur.WriteRune(rs[j])
-				j++
-			}
-			if !closed {
-				return toks, false
-			}
-			i = j
-		case c == '"':
-			inWord = true
-			next, good := readDQ(i+1, false)
-			if !good {
-				return toks, false
-			}
-			i = next
-		case c == '$' && i+1 < len(rs) && rs[i+1] == '(':
-			inner, next, good := readParen(i + 1)
-			if !good {
-				return toks, false
-			}
-			inWord = true
-			subs = append(subs, inner)
-			cur.WriteRune(dynAny)
-			i = next
-		case c == '@' && i+1 < len(rs) && (rs[i+1] == '(' || rs[i+1] == '{'):
-			emit(string(rs[i+1]))
-			i += 2
-		case c == '$':
-			ph, next := readVar(i)
-			inWord = true
-			cur.WriteString(ph)
-			i = next
-		case c == '[' && !inWord:
-			depth := 0
-			j := i
-			for ; j < len(rs); j++ {
-				if rs[j] == '[' {
-					depth++
-				} else if rs[j] == ']' {
-					depth--
-					if depth == 0 {
-						break
-					}
-				}
-			}
-			if j >= len(rs) {
-				cur.WriteRune(c)
-				inWord = true
-				i++
-				continue
-			}
-			inWord = true
-			cur.WriteString(string(rs[i : j+1]))
-			i = j + 1
-		case c == '&' && i+1 < len(rs) && rs[i+1] == '&':
-			emit("&&")
-			i += 2
-		case c == '|' && i+1 < len(rs) && rs[i+1] == '|':
-			emit("||")
-			i += 2
-		case strings.ContainsRune("|;(){},&+", c):
-			emit(string(c))
-			i++
-		case c == '>' || c == '<':
-			emit(string(c))
-			i++
-			if i < len(rs) && rs[i] == '>' {
-				i++
-			}
-		case c == '=' && !inWord:
-			emit("=")
-			i++
-		default:
-			inWord = true
-			cur.WriteRune(c)
-			i++
-		}
-	}
-	flush()
-	return toks, ok
+	lx.flush()
+	return lx.toks, true
 }
 
 func isWordRune(r rune) bool {
@@ -371,7 +134,9 @@ func (p *pwshEval) run(src string) bool {
 	if !ok {
 		return false
 	}
-	if psDecodeRe.MatchString(src) && psSinkRe.MatchString(src) {
+	// The obfuscation rule only matters to the main pass, not to the
+	// protect pass (mention mode), which ignores it.
+	if !p.sec.touch && psDecodeRe.MatchString(src) && psSinkRe.MatchString(src) {
 		p.c.deny(RuleObfuscation, "the PowerShell command decodes data (FromBase64String, [char], -bxor, -replace, reversed arrays) and then reads files or executes code; this hides what it accesses, so it is blocked. Write paths and commands in plain text.")
 	}
 	p.collectVars(toks)
@@ -519,58 +284,17 @@ func (p *pwshEval) statement(st *psStmt) {
 	}
 	name := p.stmtName(st)
 	toks := st.toks
-	// Variable references: env names and dynamic calls.
-	for _, t := range toks {
-		for _, m := range psPlaceholderR.FindAllStringSubmatch(t.text, -1) {
-			v := m[1]
-			if strings.HasPrefix(v, "env:") {
-				p.checkEnvName(strings.TrimPrefix(v, "env:"))
-			}
-		}
-		p.checkPercentVars(t.text)
-		lower := strings.ToLower(t.text)
-		if strings.Contains(lower, "getenvironmentvariables") || strings.Contains(lower, "win32_environment") ||
-			strings.HasSuffix(strings.ReplaceAll(lower, "/", `\`), `\environment`) || (name == "wmic" && lower == "environment") {
-			// also reg query HKCU\Environment, wmic environment, Get-CimInstance Win32_Environment
-			p.c.deny(RuleEnvExposure, envDumpReason)
-		}
-		if strings.Contains(lower, "scriptblock]::create") {
-			p.c.deny(RuleDynamicShell, "[scriptblock]::Create builds code at runtime that cannot be checked; blocked to be safe.")
-		}
-	}
-	if len(toks) > 1 && (toks[0].op == "&" || (toks[0].isWord() && toks[0].text == ".")) {
-		inner := toks[1].text
-		if strings.ContainsRune(inner, phStart) || strings.ContainsRune(inner, dynAny) {
-			p.c.deny(RuleDynamicShell, "calling a command whose name is only known at runtime (& $x / . $x) cannot be checked; blocked to be safe. Call the command by name.")
-		}
-		name = psCmdName(inner)
-		toks = toks[1:]
-	}
+	p.psrScanTokens(name, toks)
+	name, toks = p.psrCallOperator(name, toks)
 	args := toks
 	if name != "" {
 		args = toks[1:]
 	}
 	if p.sec.touch {
-		argv := []string{name}
-		for _, t := range args {
-			if t.isWord() {
-				argv = append(argv, t.text)
-			}
-		}
-		touchCommand(p.c, argv)
-		if st.pipeIn && psWriterCmds[name] && !hasPathArg(args) {
-			p.c.deny(RuleDynamicPath, fmt.Sprintf("`%s` receives the paths to change from the pipeline, which are only known at runtime.", name))
-		}
+		p.psrTouch(st, name, args)
 	}
 	if p.req.InteractiveStdin && name != "" && !st.pipeIn && !st.readerCtx {
-		argv := []string{name}
-		for _, t := range args {
-			if !t.isWord() {
-				break
-			}
-			argv = append(argv, t.text)
-		}
-		checkInteractive(p.c, argv)
+		p.psrInteractive(name, args)
 	}
 	if p.restricted && !psSpecific(name, st.readerCtx) {
 		// ShellAuto with a clean bash parse: bash already analysed this
@@ -582,14 +306,98 @@ func (p *pwshEval) statement(st *psStmt) {
 		return
 	}
 	if name != "" {
-		argv := []string{cmdBase(toks[0].text)}
-		for _, a := range args {
-			if a.isWord() {
-				argv = append(argv, plain(subjectText(p.resolve(a.text, 0)[0])))
+		p.psrCredentialPrint(toks[0].text, args)
+	}
+	p.psrDispatch(st, name, args)
+	p.psrCheckArgs(st, name, args)
+}
+
+// psrScanTokens checks variable references ($env:NAME, %NAME%) and
+// environment-dump or runtime-code constructs in every token of a statement.
+func (p *pwshEval) psrScanTokens(name string, toks []psTok) {
+	for _, t := range toks {
+		for _, m := range psPlaceholderR.FindAllStringSubmatch(t.text, -1) {
+			v := m[1]
+			if strings.HasPrefix(v, "env:") {
+				p.checkEnvName(strings.TrimPrefix(v, "env:"))
 			}
 		}
-		checkCredentialPrint(p.c, argv)
+		p.checkPercentVars(t.text)
+		lower := strings.ToLower(t.text)
+		if psrEnvDumpToken(name, lower) {
+			// also reg query HKCU\Environment, wmic environment, Get-CimInstance Win32_Environment
+			p.c.deny(RuleEnvExposure, envDumpReason)
+		}
+		if strings.Contains(lower, "scriptblock]::create") {
+			p.c.deny(RuleDynamicShell, "[scriptblock]::Create builds code at runtime that cannot be checked; blocked to be safe.")
+		}
 	}
+}
+
+// psrEnvDumpToken reports whether the lower-cased token lists the whole
+// environment (GetEnvironmentVariables, Win32_Environment, ...\Environment,
+// wmic environment).
+func psrEnvDumpToken(name, lower string) bool {
+	return strings.Contains(lower, "getenvironmentvariables") || strings.Contains(lower, "win32_environment") ||
+		strings.HasSuffix(strings.ReplaceAll(lower, "/", `\`), `\environment`) || (name == "wmic" && lower == "environment")
+}
+
+// psrCallOperator handles a statement starting with the call operator & or
+// dot-sourcing (. X): it denies a runtime-only command name and returns the
+// called command's name and the tokens starting at it.
+func (p *pwshEval) psrCallOperator(name string, toks []psTok) (string, []psTok) {
+	if len(toks) <= 1 || (toks[0].op != "&" && (!toks[0].isWord() || toks[0].text != ".")) {
+		return name, toks
+	}
+	inner := toks[1].text
+	if strings.ContainsRune(inner, phStart) || strings.ContainsRune(inner, dynAny) {
+		p.c.deny(RuleDynamicShell, "calling a command whose name is only known at runtime (& $x / . $x) cannot be checked; blocked to be safe. Call the command by name.")
+	}
+	return psCmdName(inner), toks[1:]
+}
+
+// psrTouch applies the protected-path (touch) rules to a statement.
+func (p *pwshEval) psrTouch(st *psStmt, name string, args []psTok) {
+	argv := []string{name}
+	for _, t := range args {
+		if t.isWord() {
+			argv = append(argv, t.text)
+		}
+	}
+	touchCommand(p.c, argv)
+	if st.pipeIn && psWriterCmds[name] && !hasPathArg(args) {
+		p.c.deny(RuleDynamicPath, fmt.Sprintf("`%s` receives the paths to change from the pipeline, which are only known at runtime.", name))
+	}
+}
+
+// psrInteractive checks a statement started with the session's stdin for
+// programs that read commands typed later; argv stops at the first operator.
+func (p *pwshEval) psrInteractive(name string, args []psTok) {
+	argv := []string{name}
+	for _, t := range args {
+		if !t.isWord() {
+			break
+		}
+		argv = append(argv, t.text)
+	}
+	checkInteractive(p.c, argv)
+}
+
+// psrCredentialPrint checks a named command for printing credentials, with
+// its word arguments resolved.
+func (p *pwshEval) psrCredentialPrint(head string, args []psTok) {
+	argv := []string{cmdBase(head)}
+	for _, a := range args {
+		if a.isWord() {
+			argv = append(argv, plain(subjectText(p.resolve(a.text, 0)[0])))
+		}
+	}
+	checkCredentialPrint(p.c, argv)
+}
+
+// psrDispatch runs the command-specific handlers: locations, nested shells
+// and interpreters, Invoke-Expression, cmd's set and environment dumps.
+func (p *pwshEval) psrDispatch(st *psStmt, name string, args []psTok) {
 	switch {
 	case psLocation[name]:
 		p.setLocation(args)
@@ -605,15 +413,18 @@ func (p *pwshEval) statement(st *psStmt) {
 		p.nestedCmd(args)
 	case "bash", "sh", "wsl", "zsh", "dash":
 		p.nestedBash(name, args, st.pipeIn)
-	case "set", "set-item", "get-item", "get-childitem", "get-content", "remove-item":
-		if name == "set" {
-			p.cmdSet(args)
-		}
+	case "set":
+		p.cmdSet(args)
 	case "printenv", "env":
 		if len(args) == 0 {
 			p.c.deny(RuleEnvExposure, envDumpReason)
 		}
 	}
+}
+
+// psrCheckArgs applies the path rules to the statement's words and checks
+// what a reader receives through the pipeline.
+func (p *pwshEval) psrCheckArgs(st *psStmt, name string, args []psTok) {
 	words := p.envDriveWords(args)
 	if name == "copy-item" || name == "move-item" {
 		words = p.copyDest(name, words)
@@ -882,51 +693,76 @@ func (p *pwshEval) checkWordDir(name string, t psTok, readerCtx, dirRule bool) {
 		return
 	}
 	baseReader := readerCtx || psReaders[name] || readers[name]
-	reader := baseReader || p.sec.touch
+	ctx := psrWordCtx{name: name, baseReader: baseReader, reader: baseReader || p.sec.touch, dirRule: dirRule}
 	for _, alt := range p.resolve(t.text, 0) {
 		dyn := isDynamic(alt)
 		for _, cand := range argCandidates(alt) {
-			m, ok := p.sec.checkPath(cand)
-			if !ok {
-				if reader && dirRule && !dyn {
-					if dm, ok := p.sec.dirHolds(cand, p.sec.touch && psWriterCmds[name]); ok {
-						p.c.deny(RuleSecretFile+":"+dm.pattern, dirReason(dm, "reading", p.sec))
-					}
-				}
-				continue
-			}
-			switch {
-			case m.builtin && !dyn:
-				p.c.deny(RuleEnvExposure, secretFileReason(m, "reading", p.sec))
-			case !m.glob && psMetadataCmds[name] && !p.sec.touch:
-				// Get-ChildItem ~/.ssh, Get-Item .env: names and attributes only.
-			case !m.glob:
-				p.c.deny(RuleSecretFile+":"+m.pattern, secretFileReason(m, "reading", p.sec))
-			case isDynamic(cand):
-				// A statement starting with a variable is an expression,
-				// not a command: only readers and glued fragments count.
-				if !strings.ContainsAny(cand, " \t") && (baseReader || (p.sec.touch && psWriterCmds[name]) || hasStatic(cand)) {
-					p.c.deny(RuleDynamicPath, fmt.Sprintf("the path %q is built at runtime (variable or sub-expression) and could resolve to a secret file (secrets.files: %q). Use a literal, non-secret path.", display(plain(alt)), m.pattern))
-				}
-			case !reader && !interpreters[name] && name != "":
-				// Globs only matter for commands that read files; PowerShell
-				// syntax gives too little structure to treat others strictly.
-			default:
-				m.path = plain(cand)
-				p.c.deny(RuleSecretFile+":"+m.pattern, secretFileReason(m, "reading", p.sec))
-			}
+			p.psrCheckCandidate(ctx, alt, cand, dyn)
 		}
 		if !dyn {
-			txt := plain(alt)
-			if strings.ContainsAny(txt, " \t") {
-				p.embedded(txt)
-			}
-			if p.sec.touch && strings.ContainsAny(txt, " \t\"") {
-				// PowerShell 5.1 hands embedded quotes to native programs,
-				// which split the argument again: check every piece.
-				p.touchPieces(txt)
-			}
+			p.psrCheckLiteralText(plain(alt))
 		}
+	}
+}
+
+// psrWordCtx is what checkWordDir knows about the command a word belongs to.
+type psrWordCtx struct {
+	name       string
+	baseReader bool // the command reads files (or is in a reader context)
+	reader     bool // baseReader, or protected-path checks are on
+	dirRule    bool // the directory-holding-secrets rule applies
+}
+
+// psrCheckCandidate applies the secret-file rules to one path candidate of
+// the resolved word alt.
+func (p *pwshEval) psrCheckCandidate(ctx psrWordCtx, alt, cand string, dyn bool) {
+	name := ctx.name
+	m, ok := p.sec.checkPath(cand)
+	if !ok {
+		if ctx.reader && ctx.dirRule && !dyn {
+			p.psrCheckDirHolds(name, cand)
+		}
+		return
+	}
+	switch {
+	case m.builtin && !dyn:
+		p.c.deny(RuleEnvExposure, secretFileReason(m, "reading", p.sec))
+	case !m.glob && psMetadataCmds[name] && !p.sec.touch:
+		// Get-ChildItem ~/.ssh, Get-Item .env: names and attributes only.
+	case !m.glob:
+		p.c.deny(RuleSecretFile+":"+m.pattern, secretFileReason(m, "reading", p.sec))
+	case isDynamic(cand):
+		// A statement starting with a variable is an expression,
+		// not a command: only readers and glued fragments count.
+		if !strings.ContainsAny(cand, " \t") && (ctx.baseReader || (p.sec.touch && psWriterCmds[name]) || hasStatic(cand)) {
+			p.c.deny(RuleDynamicPath, fmt.Sprintf("the path %q is built at runtime (variable or sub-expression) and could resolve to a secret file (secrets.files: %q). Use a literal, non-secret path.", display(plain(alt)), m.pattern))
+		}
+	case !ctx.reader && !interpreters[name] && name != "":
+		// Globs only matter for commands that read files; PowerShell
+		// syntax gives too little structure to treat others strictly.
+	default:
+		m.path = plain(cand)
+		p.c.deny(RuleSecretFile+":"+m.pattern, secretFileReason(m, "reading", p.sec))
+	}
+}
+
+// psrCheckDirHolds denies a directory that holds secret files.
+func (p *pwshEval) psrCheckDirHolds(name, cand string) {
+	if dm, ok := p.sec.dirHolds(cand, p.sec.touch && psWriterCmds[name]); ok {
+		p.c.deny(RuleSecretFile+":"+dm.pattern, dirReason(dm, "reading", p.sec))
+	}
+}
+
+// psrCheckLiteralText re-analyses a static word that looks like an embedded
+// command line, and its pieces when protected-path checks are on.
+func (p *pwshEval) psrCheckLiteralText(txt string) {
+	if strings.ContainsAny(txt, " \t") {
+		p.embedded(txt)
+	}
+	if p.sec.touch && strings.ContainsAny(txt, " \t\"") {
+		// PowerShell 5.1 hands embedded quotes to native programs,
+		// which split the argument again: check every piece.
+		p.touchPieces(txt)
 	}
 }
 

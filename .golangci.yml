@@ -3,6 +3,7 @@ version: "2"
 linters:
   enable:
     - errorlint
+    - gocognit
     - gocritic
     - gosec
     - misspell
@@ -10,13 +11,16 @@ linters:
     - unconvert
     - unparam
   settings:
+    gocognit:
+      # Keep functions readable (#20); tests are table-driven and exempt.
+      min-complexity: 30
     gosec:
       excludes:
         - G304 # reading user-supplied policy/config paths is the point of the tool
   exclusions:
     rules:
       - path: _test\.go
-        linters: [gosec, unparam]
+        linters: [gosec, unparam, gocognit]
 
 formatters:
   enable:

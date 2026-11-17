@@ -61,24 +61,47 @@ func (s *shellEval) processNamed(nameAlt string, args []cmdArg, stdin *stdinInfo
 	}
 	s.matchCommand(nameAlt, args)
 	if dynamicName {
-		// Unknown program ($SHELL, "$EDITOR", ...): treat it like a reader,
-		// and like a shell if it is given -c TEXT.
-		s.checkArgs("", args[1:])
-		// The name word itself can hide a path when a static fragment is
-		// glued to the runtime part (cat${IFS}.env); a bare $CMD cannot.
-		for _, cand := range argCandidates(nameAlt) {
-			if m, ok := s.sec.checkPath(cand); ok && hasStatic(cand) {
-				s.c.deny(RuleDynamicPath, fmt.Sprintf("the command word %q is built at runtime and could resolve to a secret file (secrets.files: %q). Write the command and its arguments literally.", display(plain(nameAlt)), m.pattern))
-			}
-		}
-		for i, a := range args[1:] {
-			if t, ok := a.text(); ok && t == "-c" && i+2 < len(args) {
-				s.evalString(args[i+2:i+3], "-c")
-			}
-		}
+		s.exrDynamicName(nameAlt, args)
 		return
 	}
 	rest := args[1:]
+	s.exrCommonChecks(name, rest, stdin)
+	if inner, own, ok := s.unwrap(name, rest, stdin); ok {
+		s.checkArgs(name, own)
+		if inner != nil {
+			s.processCommand(inner, stdin)
+		}
+		return
+	}
+	if s.exrSpecialCommand(name, rest, stdin) {
+		return
+	}
+	s.exrArgumentChecks(name, rest, stdin)
+}
+
+// exrDynamicName handles a command whose name is only known at runtime
+// ($SHELL, "$EDITOR", ...): it is treated like a reader, and like a shell if
+// it is given -c TEXT.
+func (s *shellEval) exrDynamicName(nameAlt string, args []cmdArg) {
+	s.checkArgs("", args[1:])
+	// The name word itself can hide a path when a static fragment is
+	// glued to the runtime part (cat${IFS}.env); a bare $CMD cannot.
+	for _, cand := range argCandidates(nameAlt) {
+		if m, ok := s.sec.checkPath(cand); ok && hasStatic(cand) {
+			s.c.deny(RuleDynamicPath, fmt.Sprintf("the command word %q is built at runtime and could resolve to a secret file (secrets.files: %q). Write the command and its arguments literally.", display(plain(nameAlt)), m.pattern))
+		}
+	}
+	for i, a := range args[1:] {
+		if t, ok := a.text(); ok && t == "-c" && i+2 < len(args) {
+			s.evalString(args[i+2:i+3], "-c")
+		}
+	}
+}
+
+// exrCommonChecks runs the checks that apply to every named command before
+// wrappers are unwrapped: stdin scripts, credential printing, mention-mode
+// touches and interactive prompts.
+func (s *shellEval) exrCommonChecks(name string, rest []cmdArg, stdin *stdinInfo) {
 	s.stdinScript(name, rest, stdin)
 	argv := []string{name}
 	for _, a := range rest {
@@ -91,52 +114,39 @@ func (s *shellEval) processNamed(nameAlt string, args []cmdArg, stdin *stdinInfo
 	if s.req.InteractiveStdin && stdin == nil {
 		checkInteractive(s.c, argv)
 	}
-	if inner, own, ok := s.unwrap(name, rest, stdin); ok {
-		s.checkArgs(name, own)
-		if inner != nil {
-			s.processCommand(inner, stdin)
-		}
-		return
-	}
+}
+
+// exrSpecialCommand dispatches commands with dedicated handling (shells,
+// eval, find, env dumpers, ...). It reports whether the analysis of the
+// command is complete; false means the generic argument checks still apply.
+func (s *shellEval) exrSpecialCommand(name string, rest []cmdArg, stdin *stdinInfo) bool {
 	switch {
 	case shells[name]:
 		s.shellCommand(name, rest, stdin)
-		return
+		return true
 	case name == "busybox" || name == "toybox":
 		s.processCommand(rest, stdin)
-		return
+		return true
 	case name == "eval":
 		s.evalString(rest, "eval")
-		return
+		return true
 	case name == "alias":
-		for _, a := range rest {
-			t := a.textOr()
-			if i := strings.IndexByte(t, '='); i > 0 {
-				s.recurseText(t[i+1:], false)
-			}
-		}
-		return
+		s.exrAliasCommand(rest)
+		return true
 	case name == "trap":
 		if len(rest) > 0 {
 			s.evalString(rest[:1], "trap")
 		}
-		return
+		return true
 	case name == "pwsh" || name == "powershell" || name == "cmd":
-		s.checkArgs(name, rest)
-		var parts []string
-		for _, a := range rest {
-			parts = append(parts, quotePS(a.textOr()))
-		}
-		pe := newPwshEval(s.e, s.sec, s.c, s.depth+1)
-		pe.req = s.req
-		pe.run(name + " " + strings.Join(parts, " "))
-		return
+		s.exrPwshCommand(name, rest)
+		return true
 	case name == "find":
 		s.findCommand(rest, stdin)
-		return
+		return true
 	case name == "xargs":
 		s.xargsCommand(rest, stdin)
-		return
+		return true
 	case name == "docker" || name == "podman" || name == "nerdctl":
 		s.containerEnv(rest)
 		s.composeConfig(name, rest)
@@ -144,50 +154,104 @@ func (s *shellEval) processNamed(nameAlt string, args []cmdArg, stdin *stdinInfo
 		s.composeConfig(name, rest)
 	case name == "printenv":
 		s.printenvCommand(rest)
-		return
+		return true
 	case name == "set":
 		if len(rest) == 0 {
 			s.c.deny(RuleEnvExposure, envDumpReason)
 		}
-		return
+		return true
 	case name == "ps":
-		for _, a := range rest {
-			t := a.textOr()
-			if !strings.HasPrefix(t, "-") && strings.ContainsRune(t, 'e') {
-				s.c.deny(RuleEnvExposure, "`ps` with the BSD `e` option prints the environment of processes, which contains secrets. Use `ps aux` without `e`.")
-				return
-			}
-			if strings.HasPrefix(t, "-") && !strings.HasPrefix(t, "--") && strings.ContainsRune(t, 'E') {
-				s.c.deny(RuleEnvExposure, "`ps -E` prints the environment of processes, which contains secrets. Use `ps -ef` or `ps aux` instead.")
-				return
-			}
-		}
+		return s.exrPsCommand(rest)
 	case name == "systemctl" || name == "tmux" || name == "launchctl":
-		for _, a := range rest {
-			t := a.textOr()
-			if t == "show-environment" || t == "showenv" || (name == "launchctl" && t == "export") {
-				s.c.deny(RuleEnvExposure, envDumpReason)
-				return
-			}
-		}
-		if name == "launchctl" && len(rest) > 0 && rest[0].textOr() == "getenv" {
-			s.printenvCommand(rest[1:]) // launchctl getenv NAME prints one variable
-			return
-		}
+		return s.exrEnvServiceCommand(name, rest)
 	case name == "source" || name == ".":
-		if len(rest) > 0 {
-			if rest[0].hasDynamic() || strings.HasPrefix(rest[0].textOr(), "/dev/fd/") {
-				s.c.deny(RuleDynamicShell, "sourcing a script whose content or path is only known at runtime cannot be checked; blocked to be safe.")
-			}
-			if t := rest[0].textOr(); (t == "/dev/stdin" || t == "-") && (stdin == nil || stdin.kind != stdinStatic) {
-				s.c.deny(RuleDynamicShell, "sourcing code from stdin cannot be checked; blocked to be safe.")
-			} else if stdin != nil && stdin.kind == stdinStatic && (t == "/dev/stdin" || t == "-") {
-				for _, txt := range stdin.texts {
-					s.recurseText(txt, false)
-				}
-			}
+		s.exrSourceCommand(rest, stdin)
+	}
+	return false
+}
+
+// exrAliasCommand analyses the value of every NAME=VALUE alias definition.
+func (s *shellEval) exrAliasCommand(rest []cmdArg) {
+	for _, a := range rest {
+		t := a.textOr()
+		if i := strings.IndexByte(t, '='); i > 0 {
+			s.recurseText(t[i+1:], false)
 		}
 	}
+}
+
+// exrPwshCommand checks the arguments of pwsh/powershell/cmd and analyses
+// the command line with the PowerShell evaluator.
+func (s *shellEval) exrPwshCommand(name string, rest []cmdArg) {
+	s.checkArgs(name, rest)
+	var parts []string
+	for _, a := range rest {
+		parts = append(parts, quotePS(a.textOr()))
+	}
+	pe := newPwshEval(s.e, s.sec, s.c, s.depth+1)
+	pe.req = s.req
+	pe.run(name + " " + strings.Join(parts, " "))
+}
+
+// exrPsCommand denies ps options that print process environments. It
+// reports whether it denied (the analysis of the command is then complete).
+func (s *shellEval) exrPsCommand(rest []cmdArg) bool {
+	for _, a := range rest {
+		t := a.textOr()
+		if !strings.HasPrefix(t, "-") && strings.ContainsRune(t, 'e') {
+			s.c.deny(RuleEnvExposure, "`ps` with the BSD `e` option prints the environment of processes, which contains secrets. Use `ps aux` without `e`.")
+			return true
+		}
+		if strings.HasPrefix(t, "-") && !strings.HasPrefix(t, "--") && strings.ContainsRune(t, 'E') {
+			s.c.deny(RuleEnvExposure, "`ps -E` prints the environment of processes, which contains secrets. Use `ps -ef` or `ps aux` instead.")
+			return true
+		}
+	}
+	return false
+}
+
+// exrEnvServiceCommand handles systemctl/tmux/launchctl subcommands that
+// dump or print environment variables. It reports whether the analysis of
+// the command is complete.
+func (s *shellEval) exrEnvServiceCommand(name string, rest []cmdArg) bool {
+	for _, a := range rest {
+		t := a.textOr()
+		if t == "show-environment" || t == "showenv" || (name == "launchctl" && t == "export") {
+			s.c.deny(RuleEnvExposure, envDumpReason)
+			return true
+		}
+	}
+	if name == "launchctl" && len(rest) > 0 && rest[0].textOr() == "getenv" {
+		s.printenvCommand(rest[1:]) // launchctl getenv NAME prints one variable
+		return true
+	}
+	return false
+}
+
+// exrSourceCommand checks `source`/`.`: a runtime-built script path or
+// dynamic stdin is denied, static stdin text is analysed.
+func (s *shellEval) exrSourceCommand(rest []cmdArg, stdin *stdinInfo) {
+	if len(rest) == 0 {
+		return
+	}
+	if rest[0].hasDynamic() || strings.HasPrefix(rest[0].textOr(), "/dev/fd/") {
+		s.c.deny(RuleDynamicShell, "sourcing a script whose content or path is only known at runtime cannot be checked; blocked to be safe.")
+	}
+	t := rest[0].textOr()
+	fromStdin := t == "/dev/stdin" || t == "-"
+	staticStdin := stdin != nil && stdin.kind == stdinStatic
+	if fromStdin && !staticStdin {
+		s.c.deny(RuleDynamicShell, "sourcing code from stdin cannot be checked; blocked to be safe.")
+	} else if staticStdin && fromStdin {
+		for _, txt := range stdin.texts {
+			s.recurseText(txt, false)
+		}
+	}
+}
+
+// exrArgumentChecks runs the generic per-command checks: interpreters and
+// role-aware argument path checks, then the tool-specific rules.
+func (s *shellEval) exrArgumentChecks(name string, rest []cmdArg, stdin *stdinInfo) {
 	if interpreters[name] {
 		if len(rest) > 1 && rest[0].textOr() == "-m" && rest[1].textOr() == "dotenv" {
 			// python -m dotenv list: the python-dotenv CLI
@@ -207,6 +271,12 @@ func (s *shellEval) processNamed(nameAlt string, args []cmdArg, stdin *stdinInfo
 		argsToCheck = s.checkCopyDest(name, argsToCheck)
 	}
 	s.checkArgsRoles(name, checkName, argsToCheck)
+	s.exrToolChecks(name, rest, stdin)
+}
+
+// exrToolChecks applies the tool-specific rules (file lists, sed, sqlite3,
+// recursive copies and searches, tool-expanded globs) in a fixed order.
+func (s *shellEval) exrToolChecks(name string, rest []cmdArg, stdin *stdinInfo) {
 	if readsFileList(name, rest) {
 		s.checkFileList(name, stdin)
 	}
@@ -316,71 +386,107 @@ var (
 // name over a directory that contains the project root or home: it would
 // print the matching line of .env with the value.
 func (s *shellEval) checkRecursiveSearch(name string, args []cmdArg) {
-	recursive := name != "grep" && name != "egrep" && name != "fgrep"
-	hiddenToo := name == "grep" || name == "egrep" || name == "fgrep" || name == "ack"
-	var pattern string
-	var dirs []cmdArg
-	explicitPattern := false
-	for i := 0; i < len(args); i++ {
-		t, ok := args[i].text()
-		if !ok {
-			continue
-		}
-		switch {
-		case t == "-e" || t == "--regexp":
-			if i+1 < len(args) {
-				pattern, _ = args[i+1].text()
-				explicitPattern = true
-				i++
-			}
-			continue
-		case strings.HasPrefix(t, "--exclude") || t == "-g" || strings.HasPrefix(t, "--glob") || strings.HasPrefix(t, "--iglob"):
-			return // the agent is already excluding files
-		case t == "--recursive" || t == "--dereference-recursive":
-			recursive = true
-			continue
-		case t == "--hidden" || t == "--no-ignore" || strings.HasPrefix(t, "-uu"):
-			hiddenToo = true
-			continue
-		case strings.HasPrefix(t, "--"):
-			continue
-		case strings.HasPrefix(t, "-") && len(t) > 1:
-			if strings.ContainsAny(t[1:], "rR") && (name == "grep" || name == "egrep" || name == "fgrep") {
-				recursive = true
-			}
-			continue
-		}
-		if pattern == "" && !explicitPattern {
-			pattern = t
-			explicitPattern = true
-			continue
-		}
-		dirs = append(dirs, args[i])
-	}
-	if !recursive || !hiddenToo || pattern == "" {
+	sc, excluded := exrScanSearchArgs(name, args)
+	if excluded || !sc.recursive || !sc.hiddenToo || sc.pattern == "" {
 		return
 	}
-	glob := ""
-	for _, tok := range identRe.FindAllString(pattern, -1) {
-		if g, ok := s.sec.envMatch(tok); ok {
-			glob = g
-			break
-		}
-	}
-	if glob == "" {
+	if s.exrSecretEnvGlob(sc.pattern) == "" {
 		return
 	}
+	dirs := sc.dirs
 	if len(dirs) == 0 {
 		dirs = []cmdArg{litArg(".")}
 	}
 	for _, d := range dirs {
 		for _, alt := range d.alts {
 			if m, ok := s.sec.containsSecretRoot(alt); ok {
-				s.c.ask(RuleSecretSearch, fmt.Sprintf("a recursive `%s` for %q over %q would also print matching lines from secret files such as %q (the variable values). Exclude them (e.g. --exclude='.env*') or search only source directories.", name, display(pattern), display(plain(alt)), m.pattern))
+				s.c.ask(RuleSecretSearch, fmt.Sprintf("a recursive `%s` for %q over %q would also print matching lines from secret files such as %q (the variable values). Exclude them (e.g. --exclude='.env*') or search only source directories.", name, display(sc.pattern), display(plain(alt)), m.pattern))
 				return
 			}
 		}
 	}
+}
+
+// exrSearchScan is the parsed command line of a grep-like search.
+type exrSearchScan struct {
+	name            string
+	pattern         string
+	dirs            []cmdArg
+	explicitPattern bool
+	recursive       bool
+	hiddenToo       bool
+}
+
+// exrIsGrep reports whether name is one of the grep family.
+func exrIsGrep(name string) bool {
+	return name == "grep" || name == "egrep" || name == "fgrep"
+}
+
+// exrScanSearchArgs parses a search command line. excluded is true when the
+// agent is already excluding files (--exclude, -g, --glob, --iglob).
+func exrScanSearchArgs(name string, args []cmdArg) (sc exrSearchScan, excluded bool) {
+	sc = exrSearchScan{name: name, recursive: !exrIsGrep(name), hiddenToo: exrIsGrep(name) || name == "ack"}
+	for i := 0; i < len(args); i++ {
+		t, ok := args[i].text()
+		if !ok {
+			continue
+		}
+		if t == "-e" || t == "--regexp" {
+			if i+1 < len(args) {
+				sc.pattern, _ = args[i+1].text()
+				sc.explicitPattern = true
+				i++
+			}
+			continue
+		}
+		handled, stop := sc.exrOption(t)
+		if stop {
+			return sc, true
+		}
+		if handled {
+			continue
+		}
+		if sc.pattern == "" && !sc.explicitPattern {
+			sc.pattern = t
+			sc.explicitPattern = true
+			continue
+		}
+		sc.dirs = append(sc.dirs, args[i])
+	}
+	return sc, false
+}
+
+// exrOption interprets an option word (other than -e/--regexp) of a search
+// command. handled is false for operands; excluded is true for options that
+// exclude files.
+func (sc *exrSearchScan) exrOption(t string) (handled, excluded bool) {
+	switch {
+	case strings.HasPrefix(t, "--exclude") || t == "-g" || strings.HasPrefix(t, "--glob") || strings.HasPrefix(t, "--iglob"):
+		return true, true // the agent is already excluding files
+	case t == "--recursive" || t == "--dereference-recursive":
+		sc.recursive = true
+	case t == "--hidden" || t == "--no-ignore" || strings.HasPrefix(t, "-uu"):
+		sc.hiddenToo = true
+	case strings.HasPrefix(t, "--"):
+	case strings.HasPrefix(t, "-") && len(t) > 1:
+		if strings.ContainsAny(t[1:], "rR") && exrIsGrep(sc.name) {
+			sc.recursive = true
+		}
+	default:
+		return false, false
+	}
+	return true, false
+}
+
+// exrSecretEnvGlob returns the secret env pattern matched by the first
+// matching identifier in a search pattern, or "".
+func (s *shellEval) exrSecretEnvGlob(pattern string) string {
+	for _, tok := range identRe.FindAllString(pattern, -1) {
+		if g, ok := s.sec.envMatch(tok); ok {
+			return g
+		}
+	}
+	return ""
 }
 
 // stdinScripts are programs that execute shell text read from stdin.
@@ -442,56 +548,76 @@ func (s *shellEval) checkArgDir(name string, a cmdArg, dirRule bool) {
 	for _, alt := range a.alts {
 		dyn := isDynamic(alt)
 		for _, cand := range argCandidates(alt) {
-			m, ok := s.sec.checkPath(cand)
-			if !ok {
-				if dirRule && !dyn && (s.sec.touch || !metadataOnly[name]) && !dirNavigation[name] {
-					// A directory holding secrets (rsync -a ~/.ssh/ ...).
-					// Mention mode: removing or moving an ancestor of the
-					// project (rm -rf ., rm -rf ..) also counts.
-					if dm, ok := s.sec.dirHolds(cand, s.sec.touch && destructiveCmds[name]); ok {
-						s.c.deny(RuleSecretFile+":"+dm.pattern, dirReason(dm, verbFor(name), s.sec))
-					}
-				}
-				continue
-			}
-			switch {
-			case m.builtin && !dyn:
-				s.c.deny(RuleEnvExposure, secretFileReason(m, verbFor(name), s.sec))
-			case !m.glob && metadataOnly[name] && !s.sec.touch:
-				// ls -l .env, touch .env, chmod 600 .env: no content is read.
-			case !m.glob:
-				s.c.deny(RuleSecretFile+":"+m.pattern, secretFileReason(m, verbFor(name), s.sec))
-			case isDynamic(cand):
-				if s.dynamicSuspicious(name, cand) {
-					s.c.deny(RuleDynamicPath, fmt.Sprintf("the argument %q to %s is built at runtime (variable or command substitution) and could resolve to a secret file (secrets.files: %q). Use a literal, non-secret path.", display(plain(alt)), cmdDisplay(name), m.pattern))
-				}
-			case (metadataOnly[name] || globBenign[name]) && !s.sec.touch:
-			default:
-				m.path = plain(cand)
-				s.c.deny(RuleSecretFile+":"+m.pattern, secretFileReason(m, verbFor(name), s.sec))
-			}
+			s.exrCheckArgCandidate(name, alt, cand, dyn, dirRule)
 		}
 		if !dyn && !interpreters[name] {
-			embedded := argCandidates(alt)
-			if i := strings.IndexByte(alt, '='); i > 0 {
-				embedded = append(embedded, alt[i+1:]) // --exec='cat .env', core.pager=...
-			}
-			for _, cand := range embedded {
-				t := strings.TrimSpace(plain(cand))
-				if !strings.ContainsAny(t, " \t\n;|&") {
-					continue
-				}
-				s.recurseText(strings.TrimLeft(t, "!:"), true)
-				if readers[name] {
-					// Editors/readers given a command string (vim -c ':r .env'):
-					// any literal secret path inside it counts.
-					for _, tok := range strings.Fields(t) {
-						if m, ok := s.sec.checkPath(escapeLit(tok)); ok && !m.glob {
-							s.c.deny(RuleSecretFile+":"+m.pattern, secretFileReason(m, verbFor(name), s.sec))
-						}
-					}
-				}
-			}
+			s.exrCheckEmbeddedCommands(name, alt)
+		}
+	}
+}
+
+// exrCheckArgCandidate applies the secret-path rules to one path-like
+// candidate cand extracted from the argument alternative alt.
+func (s *shellEval) exrCheckArgCandidate(name, alt, cand string, dyn, dirRule bool) {
+	m, ok := s.sec.checkPath(cand)
+	if !ok {
+		if dirRule && !dyn && (s.sec.touch || !metadataOnly[name]) && !dirNavigation[name] {
+			s.exrCheckSecretDir(name, cand)
+		}
+		return
+	}
+	switch {
+	case m.builtin && !dyn:
+		s.c.deny(RuleEnvExposure, secretFileReason(m, verbFor(name), s.sec))
+	case !m.glob && metadataOnly[name] && !s.sec.touch:
+		// ls -l .env, touch .env, chmod 600 .env: no content is read.
+	case !m.glob:
+		s.c.deny(RuleSecretFile+":"+m.pattern, secretFileReason(m, verbFor(name), s.sec))
+	case isDynamic(cand):
+		if s.dynamicSuspicious(name, cand) {
+			s.c.deny(RuleDynamicPath, fmt.Sprintf("the argument %q to %s is built at runtime (variable or command substitution) and could resolve to a secret file (secrets.files: %q). Use a literal, non-secret path.", display(plain(alt)), cmdDisplay(name), m.pattern))
+		}
+	case (metadataOnly[name] || globBenign[name]) && !s.sec.touch:
+	default:
+		m.path = plain(cand)
+		s.c.deny(RuleSecretFile+":"+m.pattern, secretFileReason(m, verbFor(name), s.sec))
+	}
+}
+
+// exrCheckSecretDir denies a directory holding secrets (rsync -a ~/.ssh/
+// ...). Mention mode: removing or moving an ancestor of the project
+// (rm -rf ., rm -rf ..) also counts.
+func (s *shellEval) exrCheckSecretDir(name, cand string) {
+	if dm, ok := s.sec.dirHolds(cand, s.sec.touch && destructiveCmds[name]); ok {
+		s.c.deny(RuleSecretFile+":"+dm.pattern, dirReason(dm, verbFor(name), s.sec))
+	}
+}
+
+// exrCheckEmbeddedCommands re-parses the pieces of an argument that look
+// like shell commands (--exec='cat .env', core.pager=...).
+func (s *shellEval) exrCheckEmbeddedCommands(name, alt string) {
+	embedded := argCandidates(alt)
+	if i := strings.IndexByte(alt, '='); i > 0 {
+		embedded = append(embedded, alt[i+1:]) // --exec='cat .env', core.pager=...
+	}
+	for _, cand := range embedded {
+		t := strings.TrimSpace(plain(cand))
+		if !strings.ContainsAny(t, " \t\n;|&") {
+			continue
+		}
+		s.recurseText(strings.TrimLeft(t, "!:"), true)
+		if readers[name] {
+			s.exrCheckCommandStringPaths(name, t)
+		}
+	}
+}
+
+// exrCheckCommandStringPaths denies literal secret paths inside a command
+// string given to an editor or reader (vim -c ':r .env').
+func (s *shellEval) exrCheckCommandStringPaths(name, t string) {
+	for _, tok := range strings.Fields(t) {
+		if m, ok := s.sec.checkPath(escapeLit(tok)); ok && !m.glob {
+			s.c.deny(RuleSecretFile+":"+m.pattern, secretFileReason(m, verbFor(name), s.sec))
 		}
 	}
 }
@@ -531,57 +657,72 @@ func argCandidates(alt string) []string {
 	if w, ok := winPathVariant(alt); ok {
 		out = append(out, w)
 	}
-	add := func(s string) {
-		if s != "" && !containsStr(out, s) {
-			out = append(out, s)
-		}
-	}
 	// --grep=.env, --format=%H are data unless optionValue says "path";
 	// only the value of such options is split further.
 	split := alt
 	if v, ok := optionValue(alt); ok {
-		add(v)
+		exrAddCandidate(&out, v)
 		split = v
 	} else if strings.HasPrefix(alt, "--") && strings.IndexByte(alt, '=') > 0 {
 		split = ""
 	}
-	for _, sep := range []byte{':', ','} {
-		if strings.IndexByte(split, sep) >= 0 {
-			for _, p := range splitOn(split, sep) {
-				add(p)
-				if i := strings.IndexByte(p, '='); i >= 0 {
-					add(p[i+1:])
-				}
-			}
-		}
-	}
+	exrAddSplitPieces(&out, split)
 	// Worklist: a piece found here is split again, so "-sd@.env" gives
 	// "@.env" and then ".env".
 	for i := 0; i < len(out) && i < 32; i++ {
-		c := out[i]
-		if strings.HasPrefix(c, "@") {
-			add(c[1:])
-		}
-		if len(c) > 2 && c[0] == '-' && c[1] != '-' && isAlpha(c[1]) {
-			add(c[2:])
-			// value attached after a short-option cluster: -sd@.env, -xf.env
-			k := 1
-			for k < len(c) && isAlpha(c[k]) {
-				k++
-			}
-			if k > 2 && k < len(c) {
-				add(c[k:])
-			}
-		}
-		if strings.HasPrefix(c, "<") || strings.HasPrefix(c, ">") {
-			add(strings.TrimLeft(c, "<>"))
-		}
-		// name@file (curl --data-urlencode, httpie f@file, f:=@file)
-		if j := strings.IndexByte(c, '@'); j > 0 && !strings.HasPrefix(c, "-") {
-			add(c[j+1:])
-		}
+		exrExpandCandidate(&out, out[i])
 	}
 	return out
+}
+
+// exrAddCandidate appends a non-empty candidate that is not yet in out.
+func exrAddCandidate(out *[]string, s string) {
+	if s != "" && !containsStr(*out, s) {
+		*out = append(*out, s)
+	}
+}
+
+// exrAddSplitPieces adds the pieces of split on ':' and ',', and the value
+// after '=' of each piece.
+func exrAddSplitPieces(out *[]string, split string) {
+	for _, sep := range []byte{':', ','} {
+		if strings.IndexByte(split, sep) < 0 {
+			continue
+		}
+		for _, p := range splitOn(split, sep) {
+			exrAddCandidate(out, p)
+			if i := strings.IndexByte(p, '='); i >= 0 {
+				exrAddCandidate(out, p[i+1:])
+			}
+		}
+	}
+}
+
+// exrExpandCandidate adds the path-like pieces hidden in candidate c:
+// curl-style @file, attached short-option values, redirection prefixes and
+// name@file.
+func exrExpandCandidate(out *[]string, c string) {
+	if strings.HasPrefix(c, "@") {
+		exrAddCandidate(out, c[1:])
+	}
+	if len(c) > 2 && c[0] == '-' && c[1] != '-' && isAlpha(c[1]) {
+		exrAddCandidate(out, c[2:])
+		// value attached after a short-option cluster: -sd@.env, -xf.env
+		k := 1
+		for k < len(c) && isAlpha(c[k]) {
+			k++
+		}
+		if k > 2 && k < len(c) {
+			exrAddCandidate(out, c[k:])
+		}
+	}
+	if strings.HasPrefix(c, "<") || strings.HasPrefix(c, ">") {
+		exrAddCandidate(out, strings.TrimLeft(c, "<>"))
+	}
+	// name@file (curl --data-urlencode, httpie f@file, f:=@file)
+	if j := strings.IndexByte(c, '@'); j > 0 && !strings.HasPrefix(c, "-") {
+		exrAddCandidate(out, c[j+1:])
+	}
 }
 
 var winPathRe = regexp.MustCompile(`^(?:[A-Za-z]:[\\/]|\.\.?\\|\\\\[^\\])`)
@@ -690,73 +831,20 @@ func (s *shellEval) evalString(args []cmdArg, what string) {
 
 // shellCommand handles sh/bash/zsh ... -c STRING, scripts and stdin.
 func (s *shellEval) shellCommand(name string, args []cmdArg, stdin *stdinInfo) {
-	cmdIdx := -1
-	scriptIdx := -1
-	readsStdin := false
-	var own []cmdArg
-	for i := 0; i < len(args); i++ {
-		t, ok := args[i].text()
-		if !ok {
-			if cmdIdx == -2 {
-				cmdIdx = i
-				break
-			}
-			scriptIdx = i
-			break
-		}
-		if cmdIdx == -2 {
-			cmdIdx = i
-			break
-		}
-		if t == "--" || t == "-" {
-			if t == "-" {
-				readsStdin = true
-			}
-			if i+1 < len(args) {
-				scriptIdx = i + 1
-			}
-			break
-		}
-		if strings.HasPrefix(t, "--") {
-			own = append(own, args[i])
-			if (t == "--rcfile" || t == "--init-file" || t == "--init-command") && i+1 < len(args) {
-				own = append(own, args[i+1])
-				i++
-			}
-			continue
-		}
-		if strings.HasPrefix(t, "-") || strings.HasPrefix(t, "+") {
-			flags := t[1:]
-			if strings.ContainsRune(flags, 's') {
-				readsStdin = true
-			}
-			if strings.ContainsAny(flags, "oO") && i+1 < len(args) {
-				if v, _ := args[i+1].text(); strings.Contains(strings.ToLower(v), "glob") {
-					s.sec.dotglob = true
-				}
-				i++
-			}
-			if strings.ContainsRune(flags, 'c') {
-				cmdIdx = -2
-			}
-			continue
-		}
-		scriptIdx = i
-		break
-	}
-	s.checkArgs(name, own)
+	sc := s.exrScanShellArgs(args)
+	s.checkArgs(name, sc.own)
 	switch {
-	case cmdIdx >= 0:
-		s.evalString(args[cmdIdx:cmdIdx+1], name+" -c")
+	case sc.cmdIdx >= 0:
+		s.evalString(args[sc.cmdIdx:sc.cmdIdx+1], name+" -c")
 		return
-	case cmdIdx == -2:
+	case sc.cmdIdx == -2:
 		return // `bash -c` without a string: syntax error at runtime
-	case scriptIdx >= 0 && !readsStdin:
-		if procSubstArg(args[scriptIdx]) {
+	case sc.scriptIdx >= 0 && !sc.readsStdin:
+		if procSubstArg(args[sc.scriptIdx]) {
 			s.c.deny(RuleDynamicShell, fmt.Sprintf("running `%s` on a process substitution executes code that cannot be checked; blocked to be safe.", name))
 			return
 		}
-		s.checkArgs(name, args[scriptIdx:])
+		s.checkArgs(name, args[sc.scriptIdx:])
 		return
 	}
 	s.checkArgs(name, args)
@@ -770,6 +858,91 @@ func (s *shellEval) shellCommand(name string, args []cmdArg, stdin *stdinInfo) {
 		return
 	}
 	s.c.deny(RuleDynamicShell, fmt.Sprintf("piping text that is only known at runtime into `%s` executes code that cannot be checked; blocked to be safe. Download or write the script to a file, review it, then run it.", name))
+}
+
+// exrShellScan is the parsed command line of a shell invocation. cmdIdx is
+// the index of the -c string, -1 when there is no -c, or -2 when -c was
+// given without a string.
+type exrShellScan struct {
+	cmdIdx     int
+	scriptIdx  int
+	readsStdin bool
+	own        []cmdArg
+}
+
+// exrScanShellArgs parses the options of a shell invocation up to the -c
+// string, the script operand or "--"/"-".
+func (s *shellEval) exrScanShellArgs(args []cmdArg) exrShellScan {
+	sc := exrShellScan{cmdIdx: -1, scriptIdx: -1}
+	for i := 0; i < len(args); i++ {
+		t, ok := args[i].text()
+		if sc.cmdIdx == -2 {
+			sc.cmdIdx = i
+			break
+		}
+		if !ok {
+			sc.scriptIdx = i
+			break
+		}
+		if t == "--" || t == "-" {
+			sc.exrEndOfOptions(t, i, len(args))
+			break
+		}
+		if strings.HasPrefix(t, "--") {
+			i = sc.exrLongOption(args, i, t)
+			continue
+		}
+		if strings.HasPrefix(t, "-") || strings.HasPrefix(t, "+") {
+			i = s.exrShellShortFlags(&sc, args, i, t)
+			continue
+		}
+		sc.scriptIdx = i
+		break
+	}
+	return sc
+}
+
+// exrEndOfOptions records "--" or "-" at index i of n arguments: the next
+// argument, if any, is the script, and "-" reads stdin.
+func (sc *exrShellScan) exrEndOfOptions(t string, i, n int) {
+	if t == "-" {
+		sc.readsStdin = true
+	}
+	if i+1 < n {
+		sc.scriptIdx = i + 1
+	}
+}
+
+// exrLongOption records a long shell option (and the value of --rcfile,
+// --init-file, --init-command) as the shell's own arguments. It returns the
+// index of the last argument consumed.
+func (sc *exrShellScan) exrLongOption(args []cmdArg, i int, t string) int {
+	sc.own = append(sc.own, args[i])
+	if (t == "--rcfile" || t == "--init-file" || t == "--init-command") && i+1 < len(args) {
+		sc.own = append(sc.own, args[i+1])
+		i++
+	}
+	return i
+}
+
+// exrShellShortFlags interprets a -xyz / +xyz flag cluster: s reads stdin,
+// o/O take an option name (enabling dotglob for *glob*), c takes a command
+// string. It returns the index of the last argument consumed.
+func (s *shellEval) exrShellShortFlags(sc *exrShellScan, args []cmdArg, i int, t string) int {
+	flags := t[1:]
+	if strings.ContainsRune(flags, 's') {
+		sc.readsStdin = true
+	}
+	if strings.ContainsAny(flags, "oO") && i+1 < len(args) {
+		if v, _ := args[i+1].text(); strings.Contains(strings.ToLower(v), "glob") {
+			s.sec.dotglob = true
+		}
+		i++
+	}
+	if strings.ContainsRune(flags, 'c') {
+		sc.cmdIdx = -2
+	}
+	return i
 }
 
 func procSubstArg(a cmdArg) bool {

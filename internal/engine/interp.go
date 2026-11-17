@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 )
 
 // Interpreter one-liners (python -c, node -e, perl -e, awk/sed/jq programs,
@@ -105,173 +104,16 @@ func familyOf(name string) string {
 var argvRe = regexp.MustCompile(`(?i)\bargv\b|commandArgs|\barg\s*\[|\$args\b|System\.argv`)
 
 func (s *shellEval) interpreterCommand(name string, args []cmdArg, stdin *stdinInfo) {
-	fam := familyOf(name)
-	flags := codeFlags[name]
-	words := codeOptWords[name]
-	valOpts := interpValueOpts[fam]
-	pythonLike := flags == "c"
-	gotProgram, gotScript, readsStdin := false, false, false
-	expectCode := false
-	scriptFile := false // -f FILE for awk/sed/jq
-	var codes, tail []string
-	scan := func(code string) {
-		gotProgram = true
-		codes = append(codes, code)
-		s.scanCode(name, code)
-	}
-	scanArg := func(a cmdArg) {
-		gotProgram = true
-		for _, alt := range a.alts {
-			if !isDynamic(alt) {
-				codes = append(codes, plain(alt))
-			}
-		}
-		s.scanCodeArg(name, a)
-	}
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		t, static := a.text()
-		if expectCode {
-			expectCode = false
-			scanArg(a)
-			continue
-		}
-		if !static {
-			if programFirst[name] && !gotProgram && !scriptFile {
-				scanArg(a)
-				continue
-			}
-			if !gotProgram {
-				gotScript = true
-			}
-			break
-		}
-		if t == "-" {
-			readsStdin = true
-			break
-		}
-		if t == "--" {
-			continue
-		}
-		if name == "deno" && t == "eval" && !gotScript {
-			expectCode = true
-			continue
-		}
-		if fam == "jq" && (t == "--arg" || t == "--argjson" || t == "--slurpfile" || t == "--rawfile") {
-			i += 2
-			continue
-		}
-		if words[t] {
-			expectCode = true
-			continue
-		}
-		if eq := strings.IndexByte(t, '='); eq > 0 && words[t[:eq]] {
-			scan(t[eq+1:])
-			continue
-		}
-		if name == "php" && (t == "-i" || t == "--info") {
-			s.c.deny(RuleEnvExposure, "`php -i` (phpinfo) prints the whole environment, which contains secret variables (secrets.env). Use `php -v` or `php -m` instead.")
-			continue
-		}
-		if fam == "perl" && len(t) >= 2 && (strings.HasPrefix(t, "-M") || strings.HasPrefix(t, "-m")) {
-			mod := t[2:]
-			if mod == "" && i+1 < len(args) {
-				i++
-				mod = args[i].textOr()
-			}
-			s.perlModule(mod, t[1] == 'M')
-			continue
-		}
-		if pythonLike && strings.HasPrefix(t, "-m") {
-			mod := t[2:]
-			if mod == "" && i+1 < len(args) {
-				mod = args[i+1].textOr()
-			}
-			if strings.HasPrefix(mod, "dotenv") {
-				s.implicitDotenv(name)
-			}
-			gotScript = true
-			break
-		}
-		if strings.HasPrefix(t, "--") {
-			key := t
-			if eq := strings.IndexByte(t, '='); eq > 0 {
-				key = t[:eq]
-				if codeLongFlags[key] {
-					scan(t[eq+1:])
-				}
-				continue
-			}
-			if codeLongFlags[key] {
-				expectCode = true
-				continue
-			}
-			if valOpts[key] {
-				if key == "--file" || key == "--from-file" {
-					scriptFile = true
-				}
-				i++
-			}
-			continue
-		}
-		if strings.HasPrefix(t, "-") && len(t) > 1 {
-			if valOpts[t] {
-				if t == "-f" {
-					scriptFile = true
-				}
-				i++
-				continue
-			}
-			if words != nil {
-				continue // no short-option clusters
-			}
-			letters := t[1:]
-			for j, l := range letters {
-				if flags != "" && strings.ContainsRune(flags, l) {
-					if j == len(letters)-1 {
-						expectCode = true
-					} else {
-						scan(letters[j+1:])
-					}
-					break
-				}
-			}
-			continue
-		}
-		// Operand.
-		if programFirst[name] && !gotProgram && !scriptFile {
-			scan(t)
-			continue
-		}
-		if gotProgram {
-			tail = append(tail, t)
-			continue
-		}
-		if operandFree[name] {
-			continue
-		}
-		if !programFirst[name] {
-			gotScript = true
-			break
-		}
-	}
-	s.checkArgvJoin(name, codes, tail)
-	if expectCode {
+	p := newInrInterpScan(s, name, args)
+	p.run()
+	s.checkArgvJoin(name, p.codes, p.tail)
+	if p.expectCode {
 		return // option without value: runtime error
 	}
-	if !stdinInterpreters[name] || gotProgram || (gotScript && !readsStdin) {
+	if !stdinInterpreters[name] || p.gotProgram || (p.gotScript && !p.readsStdin) {
 		return
 	}
-	switch {
-	case stdin == nil || stdin.kind == stdinFile:
-		return
-	case stdin.kind == stdinStatic && !stdin.decode:
-		for _, t := range stdin.texts {
-			s.scanCode(name, t)
-		}
-	default:
-		s.c.deny(RuleDynamicShell, fmt.Sprintf("piping code that is only known at runtime into `%s` cannot be checked; blocked to be safe. Write the script to a file you can review, then run it.", name))
-	}
+	s.inrInterpStdin(name, stdin)
 }
 
 // maxArgvJoin bounds how many adjacent operands are joined into one
@@ -527,43 +369,10 @@ func decodeLit(lang, body string) string {
 	if !strings.Contains(body, `\`) {
 		return body
 	}
-	body = namedEscRe.ReplaceAllStringFunc(body, func(m string) string {
-		name := strings.ToUpper(namedEscRe.FindStringSubmatch(m)[1])
-		if c, ok := namedChars[name]; ok {
-			return c
-		}
-		for _, p := range []string{"LATIN SMALL LETTER ", "LATIN CAPITAL LETTER ", "DIGIT "} {
-			if rest, ok := strings.CutPrefix(name, p); ok {
-				if p == "DIGIT " {
-					digits := map[string]string{"ZERO": "0", "ONE": "1", "TWO": "2", "THREE": "3", "FOUR": "4", "FIVE": "5", "SIX": "6", "SEVEN": "7", "EIGHT": "8", "NINE": "9"}
-					if d, ok := digits[rest]; ok {
-						return d
-					}
-				} else if len(rest) == 1 {
-					if p == "LATIN SMALL LETTER " {
-						return strings.ToLower(rest)
-					}
-					return rest
-				}
-			}
-		}
-		return m
-	})
-	body = braceEscRe.ReplaceAllStringFunc(body, func(m string) string {
-		n, err := strconv.ParseUint(braceEscRe.FindStringSubmatch(m)[1], 16, 32)
-		if err != nil || n > utf8.MaxRune {
-			return m
-		}
-		return string(rune(n))
-	})
+	body = namedEscRe.ReplaceAllStringFunc(body, inrNamedEsc)
+	body = braceEscRe.ReplaceAllStringFunc(body, inrBraceEsc)
 	if lang == "lua" || lang == "luajit" {
-		body = luaDecRe.ReplaceAllStringFunc(body, func(m string) string {
-			n, err := strconv.ParseUint(m[1:], 10, 8)
-			if err != nil {
-				return m
-			}
-			return string([]byte{byte(n)})
-		})
+		body = luaDecRe.ReplaceAllStringFunc(body, inrLuaDec)
 	}
 	return ansiC(body)
 }
@@ -888,20 +697,8 @@ func receiverArg(code string, start int) (string, bool) {
 }
 
 func (s *shellEval) scanEnvAccess(lang, code string) {
-	for _, acc := range envAccessors {
-		if acc.langs != nil && !acc.langs[lang] {
-			continue
-		}
-		for _, loc := range acc.re.FindAllStringIndex(code, -1) {
-			if !s.sec.work.spend(1) {
-				return
-			}
-			name, verdict := envAccessName(acc, code[loc[1]:])
-			s.envVerdict(lang, name, verdict)
-			if verdict != envNamed {
-				break // further matches of this accessor add nothing
-			}
-		}
+	if !s.inrScanEnvAccessors(lang, code) {
+		return
 	}
 	for _, re := range envDumpRes {
 		if re.MatchString(code) {
@@ -909,23 +706,7 @@ func (s *shellEval) scanEnvAccess(lang, code string) {
 		}
 	}
 	if lang == "perl" {
-		for _, loc := range perlUseEnvRe.FindAllStringIndex(code, -1) {
-			if !s.sec.work.spend(1) {
-				return
-			}
-			list := perlImportList(code[loc[1]:])
-			if strings.TrimSpace(list) == "" {
-				s.envVerdict(lang, "", envDump)
-				return // further matches cannot change the verdict
-			}
-			names := strings.FieldsFunc(list, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })
-			if !s.sec.work.spend(len(names)) {
-				return
-			}
-			for _, n := range names {
-				s.checkEnvName(strings.TrimLeft(n, "$@"))
-			}
-		}
+		s.inrScanPerlUseEnv(lang, code)
 	}
 }
 
@@ -1004,63 +785,7 @@ func (s *shellEval) scanNodeProcess(lang, code string) {
 		if !s.sec.work.spend(1) {
 			return
 		}
-		if loc[0] > 0 && blank[loc[0]-1] == '$' {
-			continue // $process: another identifier
-		}
-		rest, brest := code[loc[1]:], blank[loc[1]:]
-		if m := processPropRe.FindStringSubmatch(brest); m != nil {
-			if processDumpProps[m[1]] {
-				s.envVerdict(lang, "", envDump)
-			}
-			continue // process.env is an accessor of its own
-		}
-		if m := processKeyRe.FindStringSubmatch(rest); m != nil {
-			switch {
-			case m[2] == "env":
-				name, v := envAccessName(envAccessor{bracket: true, attr: true}, rest[len(m[0]):])
-				s.envVerdict(lang, name, v)
-			case processDumpProps[m[2]]:
-				s.envVerdict(lang, "", envDump)
-			}
-			continue
-		}
-		trimmed := strings.TrimLeft(brest, " \t\r\n")
-		before := strings.TrimRight(blank[max(0, loc[0]-processLookback):loc[0]], " \t\r\n")
-		var next, prev byte
-		if trimmed != "" {
-			next = trimmed[0]
-		}
-		if before != "" {
-			prev = before[len(before)-1]
-		}
-		switch {
-		case strings.HasPrefix(trimmed, "["), strings.HasPrefix(trimmed, "?.["):
-			s.envVerdict(lang, "", envDynamic)
-			continue
-		case next == '(':
-			continue // a function named process
-		case strings.HasSuffix(before, "..."):
-			// spread: {...process}
-		case prev == '.':
-			continue // obj.process
-		case next == ':' && prev != '?':
-			continue // {process: 1}
-		case next == '=' && !strings.HasPrefix(trimmed, "=="):
-			continue // assignment to a local named process
-		case prev == '=' || strings.HasSuffix(before, "=>"):
-			if len(before) >= 2 && strings.ContainsRune("=!<>", rune(before[len(before)-2])) && !strings.HasSuffix(before, "=>") {
-				continue // comparison: x == process
-			}
-		case prev == '(' || prev == ',':
-			if prev == '(' && processCallbackRe.MatchString(before) {
-				continue
-			}
-		case prev == '[':
-		case processReturnRe.MatchString(before):
-		case (prev == 0 || prev == ';' || prev == '{' || prev == '}' || prev == '\n') &&
-			(next == 0 || next == ';' || next == '}' || next == ','):
-			// a bare expression statement: node -p process
-		default:
+		if !s.inrNodeProcessValue(lang, code, blank, loc) {
 			continue
 		}
 		s.c.deny(RuleEnvExposure, fmt.Sprintf("the `%s` code uses the `process` object as a value (alias, destructuring, spread or argument), which exposes process.env with all secret variables (secrets.env). Read specific non-secret variables as process.env.NAME instead.", lang))

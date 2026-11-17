@@ -136,46 +136,64 @@ func parseClass(rs []rune) (*charClass, int, bool) {
 	}
 	first := true
 	for i < len(rs) {
-		r := rs[i]
-		if r == ']' && !first {
+		if rs[i] == ']' && !first {
 			return c, i + 1, true
 		}
 		first = false
-		if r == '[' && i+1 < len(rs) && (rs[i+1] == ':' || rs[i+1] == '=' || rs[i+1] == '.') {
+		if psrClassNameStart(rs, i) {
 			c.fuzzy = true
-			end := -1
-			for j := i + 2; j+1 < len(rs); j++ {
-				if rs[j] == rs[i+1] && rs[j+1] == ']' {
-					end = j + 2
-					break
-				}
-			}
+			end := psrClassNameEnd(rs, i)
 			if end < 0 {
 				return nil, 0, false
 			}
 			i = end
 			continue
 		}
-		if r == '\\' && i+1 < len(rs) {
-			i++
-			r = rs[i]
-		}
-		lo, hi := r, r
-		if i+2 < len(rs) && rs[i+1] == '-' && rs[i+2] != ']' {
-			hi = rs[i+2]
-			if hi == '\\' && i+3 < len(rs) {
-				hi = rs[i+3]
-				i++
-			}
-			i += 2
-		}
-		if lo > hi {
-			lo, hi = hi, lo
-		}
+		var lo, hi rune
+		lo, hi, i = psrClassRange(rs, i)
 		c.ranges = append(c.ranges, [2]rune{lo, hi})
-		i++
 	}
 	return nil, 0, false
+}
+
+// psrClassNameStart reports whether rs[i] opens a [:class:], [=equiv=] or
+// [.collating.] element inside a bracket expression.
+func psrClassNameStart(rs []rune, i int) bool {
+	return rs[i] == '[' && i+1 < len(rs) && (rs[i+1] == ':' || rs[i+1] == '=' || rs[i+1] == '.')
+}
+
+// psrClassNameEnd returns the index after the element opened at rs[i] (see
+// psrClassNameStart), or -1 when it is not closed.
+func psrClassNameEnd(rs []rune, i int) int {
+	for j := i + 2; j+1 < len(rs); j++ {
+		if rs[j] == rs[i+1] && rs[j+1] == ']' {
+			return j + 2
+		}
+	}
+	return -1
+}
+
+// psrClassRange reads one character or range (a-z, with backslash escapes)
+// starting at rs[i] and returns its bounds (low first) and the index after it.
+func psrClassRange(rs []rune, i int) (lo, hi rune, next int) {
+	r := rs[i]
+	if r == '\\' && i+1 < len(rs) {
+		i++
+		r = rs[i]
+	}
+	lo, hi = r, r
+	if i+2 < len(rs) && rs[i+1] == '-' && rs[i+2] != ']' {
+		hi = rs[i+2]
+		if hi == '\\' && i+3 < len(rs) {
+			hi = rs[i+3]
+			i++
+		}
+		i += 2
+	}
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	return lo, hi, i + 1
 }
 
 // admits reports whether the single-character token t can match some rune
