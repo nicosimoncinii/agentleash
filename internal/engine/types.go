@@ -62,6 +62,11 @@ type Request struct {
 	ProjectRoot string
 	// Home is the user's home directory, used to expand "~/".
 	Home string
+	// InteractiveStdin means the agent can keep typing into the started
+	// process after this call without further checks (Codex write_stdin
+	// into a unified-exec session). Programs that would run that input as
+	// commands (shells, REPLs, remote shells, editors) are then denied.
+	InteractiveStdin bool
 }
 
 // Verdict is the engine's answer.

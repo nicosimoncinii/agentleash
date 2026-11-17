@@ -148,6 +148,8 @@ func TestDecodeHook(t *testing.T) {
 			}
 			want := tt.want
 			want.Cwd, want.ProjectRoot, want.Home = cwd, root, home
+			// Every Codex shell session accepts write_stdin input (#18).
+			want.InteractiveStdin = want.Tool == engine.ToolShell
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("got  %#v\nwant %#v", got, want)
 			}

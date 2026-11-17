@@ -120,8 +120,10 @@ Known gaps (details in [docs/design.md](docs/design.md) §7.7):
 - **Interpreter one-liners** (`python -c`, `node -e`) are scanned heuristically; heavily
   obfuscated code can get through.
 - **PowerShell** is tokenized, not fully parsed.
-- **Codex**: commands typed into an interactive shell via `write_stdin` do not trigger
-  hooks ([#18](https://github.com/nicosimoncinii/agentleash/issues/18)).
+- **Codex**: input sent with `write_stdin` to a running command does not trigger hooks, so
+  agentleash blocks starting interactive programs there (bare shells, REPLs, `ssh` without a
+  command, `docker exec -it`, database shells, editors, pagers). A program that becomes
+  interactive indirectly (a pager opened by `git log`) is not caught.
 - **Self-protection is lexical**: it stops an agent editing its own leash directly, but
   writes that never name a protected file are not seen, for example a script or patch
   written in an earlier call and run later, `git checkout .`, `git stash` or `git pull`.

@@ -110,6 +110,8 @@ func (Adapter) DecodeHook(payload []byte, projectRoot, home string) (engine.Requ
 			return engine.Request{}, fmt.Errorf("codex hook: %s: %w", in.ToolName, err)
 		}
 		req.Tool, req.Command, req.Shell = engine.ToolShell, cmd, shell
+		// Input later sent with write_stdin to this session gets no PreToolUse (#18).
+		req.InteractiveStdin = true
 		// exec_command intercepts `apply_patch` invocations (heredoc or argv) and applies them
 		// with no second PreToolUse, so the patch targets are checked here as well.
 		req.Paths = embeddedPatchPaths(in.Cwd, home, cmd, argv)

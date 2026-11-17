@@ -88,6 +88,9 @@ func (s *shellEval) processNamed(nameAlt string, args []cmdArg, stdin *stdinInfo
 	if s.sec.touch {
 		touchCommand(s.c, argv)
 	}
+	if s.req.InteractiveStdin && stdin == nil {
+		checkInteractive(s.c, argv)
+	}
 	if inner, own, ok := s.unwrap(name, rest, stdin); ok {
 		s.checkArgs(name, own)
 		if inner != nil {

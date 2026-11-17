@@ -562,6 +562,16 @@ func (p *pwshEval) statement(st *psStmt) {
 			p.c.deny(RuleDynamicPath, fmt.Sprintf("`%s` receives the paths to change from the pipeline, which are only known at runtime.", name))
 		}
 	}
+	if p.req.InteractiveStdin && name != "" && !st.pipeIn && !st.readerCtx {
+		argv := []string{name}
+		for _, t := range args {
+			if !t.isWord() {
+				break
+			}
+			argv = append(argv, t.text)
+		}
+		checkInteractive(p.c, argv)
+	}
 	if p.restricted && !psSpecific(name, st.readerCtx) {
 		// ShellAuto with a clean bash parse: bash already analysed this
 		// statement; only PowerShell/cmd-specific constructs count here.
@@ -584,7 +594,7 @@ func (p *pwshEval) statement(st *psStmt) {
 	case psLocation[name]:
 		p.setLocation(args)
 	case interpreters[name]:
-		p.nestedBash(name, args)
+		p.nestedBash(name, args, st.pipeIn)
 	}
 	switch name {
 	case "invoke-expression":
@@ -594,7 +604,7 @@ func (p *pwshEval) statement(st *psStmt) {
 	case "cmd":
 		p.nestedCmd(args)
 	case "bash", "sh", "wsl", "zsh", "dash":
-		p.nestedBash(name, args)
+		p.nestedBash(name, args, st.pipeIn)
 	case "set", "set-item", "get-item", "get-childitem", "get-content", "remove-item":
 		if name == "set" {
 			p.cmdSet(args)
@@ -1083,7 +1093,7 @@ func (p *pwshEval) nestedCmd(args []psTok) {
 	}
 }
 
-func (p *pwshEval) nestedBash(name string, args []psTok) {
+func (p *pwshEval) nestedBash(name string, args []psTok, piped bool) {
 	var parts []string
 	if name != "wsl" {
 		parts = append(parts, name)
@@ -1106,7 +1116,12 @@ func (p *pwshEval) nestedBash(name string, args []psTok) {
 	if len(parts) == 0 {
 		return
 	}
-	sh := newShellEval(p.e, p.sec, p.c, p.depth+1).withReq(p.req)
+	req := p.req
+	if piped {
+		// stdin is the PowerShell pipeline, not the session (#18).
+		req.InteractiveStdin = false
+	}
+	sh := newShellEval(p.e, p.sec, p.c, p.depth+1).withReq(req)
 	sh.run(strings.Join(parts, " "))
 }
 

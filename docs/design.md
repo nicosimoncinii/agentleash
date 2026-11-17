@@ -185,6 +185,8 @@ Additive contract changes (issue #2): `engine.ShellAuto` (`"auto"`) for commands
 dialect is unknown (Codex `exec_command`); `Request.Paths` is also honoured for `ToolShell`
 (paths an adapter knows the command touches, e.g. `apply_patch` through `exec_command`);
 `engine.New(p, opts...)` accepts `engine.WithSymlinkResolver`. See §7.
+Issue #18 adds `Request.InteractiveStdin`: the agent can keep typing into the started process
+without further checks (Codex `write_stdin`); see §7.10.
 
 ### Agent specifics (verified against official docs, 2026-11)
 
@@ -224,6 +226,8 @@ load only when the project layer is trusted, and each hook must be trusted once 
 Intercepts `Bash`, `exec_command`, `apply_patch` (`Edit`/`Write`), MCP tools. Same deny JSON
 shape; **`ask` is not supported in PreToolUse** (would fail open), so `ask` maps to `deny`
 with an explanatory reason. `commandWindows` overrides the command on Windows.
+`write_stdin` is transport for an existing unified-exec session and does not run PreToolUse
+again, so the adapter sets `Request.InteractiveStdin` on every shell request (§7.10).
 
 ### Merging config files
 
@@ -596,7 +600,8 @@ a `|` are matched as the equivalent pipeline: a process substitution used as the
 `command-ask:<pattern>`, `parse-error`, `dynamic-path`, `dynamic-shell`, `obfuscation`,
 `encoded-command`, `credential-print`, `secret-dir-copy` (ask), `secret-search` (ask),
 `nesting-limit`, `too-complex`, `internal-error`, `no-policy`, `unknown-tool`,
-`protected-file:<pattern>` (§7.9).
+`protected-file:<pattern>` (§7.9),
+`interactive-session` (§7.10).
 `secret-file:<pattern>` is **ask** (not deny) when a secret path is only the destination of
 a copy from a non-secret file. When several rules fire, the verdict carries
 the most specific one (named secret before generic dynamic rules).
@@ -723,6 +728,32 @@ guarantee. A write that never names a protected file is not seen: a script, patc
 written in an earlier call and then run or applied (`python3 x.py`, `git apply x.diff`,
 `patch`, `tar x`, `unzip -o`), and git commands that rewrite the working tree (`git checkout
 .`, `git restore .`, `git stash`, `git reset --hard`, `git pull`, switching branches).
+
+### 7.10 Interactive sessions (`Request.InteractiveStdin`, #18)
+
+When `InteractiveStdin` is set, a simple command whose stdin is the session's own stdin (not
+a pipe, a file redirection or a here-doc/here-string; PowerShell statements that receive
+pipeline input are exempt) is **denied** (`interactive-session`) when it would read commands
+typed later:
+
+- programs that run code from stdin (§7.5 `stdinCodeRunner`): shells without a script or
+  `-c`, `sudo -s|-i`, `su`, `pwsh` without a command, interpreters without a program;
+- interpreters with a REPL flag (`python -i`, `node -i`, `php -a`), `irb`, `pry`, `iex`;
+- `cmd` without `/c`, `wsl` without a command;
+- `ssh` without a remote command (not `-N`, `-V`, `-G`, `-O`, `-Q`);
+- `docker|podman|nerdctl exec|run|debug` with `-i`/`--interactive`, `attach`, and
+  `kubectl|oc exec|run|debug` with `-i`/`--stdin`, `attach`;
+- database shells without a query: `psql` (no `-c`/`-f`), `mysql`/`mariadb` (no `-e`),
+  `sqlite3` with fewer than two operands, `redis-cli`/`valkey-cli` without a command,
+  `mongosh`/`mongo` without `--eval`/`-f`/script;
+- `gdb`/`lldb` without batch mode, `sftp` without `-b`, `ftp`, `telnet`;
+- editors and pagers with shell escapes: `vi vim nvim view ex ed nano pico micro`, `emacs`
+  without `--batch`/`--script`, `less more most man`; `tmux screen script expect`.
+
+Every wrapper level (`sudo`, `env`, `nohup`, ...) is checked. Not covered: programs started
+indirectly that become interactive (a pager opened by `git log` on a terminal, an editor opened
+by `git commit` without `-m`), and arbitrary programs that read and execute their own input
+format.
 
 ## 8. Testing strategy
 

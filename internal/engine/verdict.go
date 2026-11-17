@@ -26,6 +26,7 @@ const (
 	RuleInternal     = "internal-error"
 	RuleNoPolicy     = "no-policy"
 	RuleUnknownTool  = "unknown-tool"
+	RuleInteractive  = "interactive-session" // program reads commands typed later (Codex write_stdin)
 )
 
 const reasonPrefix = "agentleash: "
