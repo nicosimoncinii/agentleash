@@ -15,6 +15,10 @@ const maxDepth = 8
 type Engine struct {
 	policy  *policy.Policy
 	resolve func(string) (string, error)
+	// protect analyses write-protected files (protect.go); nil inside it.
+	protect *Engine
+	// touch is set on the protect engine: see secretSet.touch.
+	touch bool
 }
 
 // Option configures an Engine.
@@ -34,26 +38,45 @@ func New(p *policy.Policy, opts ...Option) *Engine {
 	for _, o := range opts {
 		o(e)
 	}
+	e.protect = newProtectEngine(p, e.resolve)
 	return e
 }
 
 // Evaluate decides whether a tool call may proceed.
 // Precedence: deny > ask > allow. Fails closed on any doubt.
 func (e *Engine) Evaluate(req Request) (v Verdict) {
+	c, exhausted := e.analyse(req)
+	if exhausted {
+		// Analysis stopped early: whatever was found so far is incomplete.
+		return Verdict{Decision: Deny, Rule: RuleTooComplex, Reason: reasonPrefix + tooComplexReason}
+	}
+	v = c.verdict()
+	if v.Decision != Deny {
+		// A protect ask does not replace an existing ask (keep its reason).
+		if pv, ok := e.protectedVerdict(req); ok && (v.Decision == Allow || pv.Decision == Deny) {
+			return pv
+		}
+	}
+	return v
+}
+
+// analyse runs the checks and returns every finding. exhausted reports that
+// the work budget ran out (the findings are then incomplete).
+func (e *Engine) analyse(req Request) (c *collector, exhausted bool) {
+	c = &collector{}
 	defer func() {
 		if r := recover(); r != nil {
-			v = Verdict{
-				Decision: Deny,
-				Rule:     RuleInternal,
-				Reason:   reasonPrefix + fmt.Sprintf("internal error while checking this call (%v); blocked to be safe. Try a simpler command.", r),
-			}
+			c = &collector{}
+			c.deny(RuleInternal, fmt.Sprintf("internal error while checking this call (%v); blocked to be safe. Try a simpler command.", r))
+			exhausted = false
 		}
 	}()
 	if e == nil || e.policy == nil {
-		return Verdict{Decision: Deny, Rule: RuleNoPolicy, Reason: reasonPrefix + "no policy is loaded; blocked to be safe. Run `agentleash doctor`."}
+		c.deny(RuleNoPolicy, "no policy is loaded; blocked to be safe. Run `agentleash doctor`.")
+		return c, false
 	}
 	sec := newSecretSet(e.policy, req, e.resolve)
-	c := &collector{}
+	sec.touch = e.touch
 	switch req.Tool {
 	case ToolShell:
 		if len(req.Command) > maxCommandBytes {
@@ -71,11 +94,7 @@ func (e *Engine) Evaluate(req Request) (v Verdict) {
 	default:
 		c.deny(RuleUnknownTool, fmt.Sprintf("unknown tool kind %q; blocked to be safe.", display(string(req.Tool))))
 	}
-	if sec.work.exhausted() {
-		// Analysis stopped early: whatever was found so far is incomplete.
-		return Verdict{Decision: Deny, Rule: RuleTooComplex, Reason: reasonPrefix + tooComplexReason}
-	}
-	return c.verdict()
+	return c, sec.work.exhausted()
 }
 
 func (e *Engine) evalShell(req Request, sec *secretSet, c *collector) {

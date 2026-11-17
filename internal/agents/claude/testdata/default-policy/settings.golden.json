@@ -76,7 +76,17 @@
       "Edit(!.env.sample)",
       "Edit(!.env.template)",
       "Edit(!.env.dist)",
-      "Edit(!*.pub)"
+      "Edit(!*.pub)",
+      "Edit(/.agentleash.yaml)",
+      "Edit(/.claude/settings.json)",
+      "Edit(/.claude/settings.local.json)",
+      "Edit(/.claude/agentleash-state.json)",
+      "Edit(/.codex/hooks.json)",
+      "Edit(/.codex/config.toml)",
+      "Edit(~/.claude/settings.json)",
+      "Edit(~/.claude/settings.local.json)",
+      "Edit(~/.codex/config.toml)",
+      "Edit(~/.codex/hooks.json)"
     ]
   },
   "hooks": {

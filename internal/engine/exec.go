@@ -85,6 +85,9 @@ func (s *shellEval) processNamed(nameAlt string, args []cmdArg, stdin *stdinInfo
 		argv = append(argv, a.textOr())
 	}
 	checkCredentialPrint(s.c, argv)
+	if s.sec.touch {
+		touchCommand(s.c, argv)
+	}
 	if inner, own, ok := s.unwrap(name, rest, stdin); ok {
 		s.checkArgs(name, own)
 		if inner != nil {
@@ -190,10 +193,13 @@ func (s *shellEval) processNamed(nameAlt string, args []cmdArg, stdin *stdinInfo
 		s.interpreterCommand(name, rest, stdin)
 	}
 	checkName := name
-	if name == "git" && gitMetadata(rest) {
+	if name == "git" && !s.sec.touch && gitMetadata(rest) {
 		checkName = "git-metadata"
 	}
-	argsToCheck := dataFiltered(name, rest)
+	argsToCheck := rest
+	if !s.sec.touch {
+		argsToCheck = dataFiltered(name, rest)
+	}
 	if copyCmds[name] {
 		argsToCheck = s.checkCopyDest(name, argsToCheck)
 	}
@@ -435,9 +441,11 @@ func (s *shellEval) checkArgDir(name string, a cmdArg, dirRule bool) {
 		for _, cand := range argCandidates(alt) {
 			m, ok := s.sec.checkPath(cand)
 			if !ok {
-				if dirRule && !dyn && !metadataOnly[name] && !dirNavigation[name] {
+				if dirRule && !dyn && (s.sec.touch || !metadataOnly[name]) && !dirNavigation[name] {
 					// A directory holding secrets (rsync -a ~/.ssh/ ...).
-					if dm, ok := s.sec.dirHoldsSecret(cand); ok {
+					// Mention mode: removing or moving an ancestor of the
+					// project (rm -rf ., rm -rf ..) also counts.
+					if dm, ok := s.sec.dirHolds(cand, s.sec.touch && destructiveCmds[name]); ok {
 						s.c.deny(RuleSecretFile+":"+dm.pattern, dirReason(dm, verbFor(name), s.sec))
 					}
 				}
@@ -446,7 +454,7 @@ func (s *shellEval) checkArgDir(name string, a cmdArg, dirRule bool) {
 			switch {
 			case m.builtin && !dyn:
 				s.c.deny(RuleEnvExposure, secretFileReason(m, verbFor(name), s.sec))
-			case !m.glob && metadataOnly[name]:
+			case !m.glob && metadataOnly[name] && !s.sec.touch:
 				// ls -l .env, touch .env, chmod 600 .env: no content is read.
 			case !m.glob:
 				s.c.deny(RuleSecretFile+":"+m.pattern, secretFileReason(m, verbFor(name), s.sec))
@@ -454,7 +462,7 @@ func (s *shellEval) checkArgDir(name string, a cmdArg, dirRule bool) {
 				if s.dynamicSuspicious(name, cand) {
 					s.c.deny(RuleDynamicPath, fmt.Sprintf("the argument %q to %s is built at runtime (variable or command substitution) and could resolve to a secret file (secrets.files: %q). Use a literal, non-secret path.", display(plain(alt)), cmdDisplay(name), m.pattern))
 				}
-			case metadataOnly[name] || globBenign[name]:
+			case (metadataOnly[name] || globBenign[name]) && !s.sec.touch:
 			default:
 				m.path = plain(cand)
 				s.c.deny(RuleSecretFile+":"+m.pattern, secretFileReason(m, verbFor(name), s.sec))
@@ -500,6 +508,9 @@ func (s *shellEval) dynamicSuspicious(name, cand string) bool {
 	}
 	if name == "" || readers[name] || interpreters[name] || shells[name] {
 		return true
+	}
+	if s.sec.touch && (destructiveCmds[name] || writerCmds[name]) {
+		return true // mention mode: rm "$F", xargs rm
 	}
 	if benignDynamic[name] {
 		return false

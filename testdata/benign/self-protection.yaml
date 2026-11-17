@@ -1,0 +1,66 @@
+description: "Self-protection: reading agentleash's configuration stays allowed (issue #17)"
+cases:
+  - name: cat policy
+    tool: shell
+    shell: bash
+    command: "cat .agentleash.yaml"
+    expect: allow
+  - name: sed print codex config
+    tool: shell
+    shell: bash
+    command: "sed -n '1,200p' .codex/config.toml"
+    expect: allow
+  - name: bash -lc sed print
+    tool: shell
+    command: "bash -lc 'sed -n 1,200p .codex/config.toml'"
+    expect: allow
+  - name: grep policy
+    tool: shell
+    shell: bash
+    command: "grep -n deny .agentleash.yaml"
+    expect: allow
+  - name: git diff policy
+    tool: shell
+    shell: bash
+    command: "git diff .agentleash.yaml"
+    expect: allow
+  - name: git log policy
+    tool: shell
+    shell: bash
+    command: "git --no-pager log -p -- .agentleash.yaml"
+    expect: allow
+  - name: commit policy
+    tool: shell
+    shell: bash
+    command: "git add .agentleash.yaml && git commit -m 'policy: tighten'"
+    expect: allow
+  - name: ls claude dir
+    tool: shell
+    shell: bash
+    command: "ls -la .claude"
+    expect: allow
+  - name: jq settings
+    tool: shell
+    shell: bash
+    command: "jq . .claude/settings.json"
+    expect: allow
+  - name: mkdir claude agents
+    tool: shell
+    shell: bash
+    command: "mkdir -p .claude/agents"
+    expect: allow
+  - name: write a claude command
+    tool: shell
+    shell: bash
+    command: "touch .claude/commands/review.md"
+    expect: allow
+  - name: get-content policy
+    tool: shell
+    shell: powershell
+    command: "Get-Content .agentleash.yaml"
+    expect: allow
+  - name: select-string codex config
+    tool: shell
+    shell: powershell
+    command: "Get-Content .codex\\config.toml | Select-String hooks"
+    expect: allow

@@ -33,6 +33,10 @@ Teams using more than one agent maintain several configs that drift apart.
   native deny rules **and** a runtime hook (defense in depth).
 - **Understands the shell**: pipes, `&&`, `$(...)`, backticks, `sh -c "..."`, globs like
   `cat .en*`, `base64 .env`, `printenv`, `echo $AWS_SECRET_ACCESS_KEY`...
+- **Protects itself**: the agent can read `.agentleash.yaml` and the agent settings that load
+  the hooks (`.claude/settings*.json`, `.codex/hooks.json`, `.codex/config.toml` and the
+  user-level ones), but cannot edit, move or delete them with any tool or shell command.
+  Add your own read-only files under `protect.files`.
 - **Fails closed**: when in doubt, it blocks and tells the agent why.
   Piping a download straight into a shell (`curl … | sh`) is always blocked, because the
   script cannot be checked: download it to a file first (that form asks for confirmation).
@@ -51,6 +55,8 @@ secrets:
 commands:
   deny: ["rm -rf /", "git push --force*"]
   ask:  ["git reset --hard*", "terraform apply*"]
+protect:                       # readable, never modified by the agent
+  files: ["Makefile", ".github/workflows/**"]
 ```
 
 ## Supported agents
@@ -116,8 +122,9 @@ Known gaps (details in [docs/design.md](docs/design.md) §7.7):
 - **PowerShell** is tokenized, not fully parsed.
 - **Codex**: commands typed into an interactive shell via `write_stdin` do not trigger
   hooks ([#18](https://github.com/nicosimoncinii/agentleash/issues/18)).
-- An agent could edit `.agentleash.yaml` itself to weaken it
-  ([#17](https://github.com/nicosimoncinii/agentleash/issues/17)).
+- **Self-protection is lexical**: it stops an agent editing its own leash directly, but
+  writes that never name a protected file are not seen, for example a script or patch
+  written in an earlier call and run later, `git checkout .`, `git stash` or `git pull`.
 
 Found a bypass? Please report it privately, see [SECURITY.md](SECURITY.md).
 
@@ -125,7 +132,7 @@ Found a bypass? Please report it privately, see [SECURITY.md](SECURITY.md).
 
 - [x] v0.1: Claude Code + Codex, secrets + dangerous commands, attack corpus
 - [x] v0.2: red-team hardening (interpreters, runners, write-then-run, `rm`/`git` variants)
-- [ ] Self-protection of agent and agentleash config ([#17](https://github.com/nicosimoncinii/agentleash/issues/17))
+- [x] Self-protection of agent and agentleash config ([#17](https://github.com/nicosimoncinii/agentleash/issues/17))
 - [ ] Gemini CLI and Cursor adapters
 - [ ] Audit log of blocked actions
 - [ ] Secret placeholders (agent sees `{{STRIPE_KEY}}`, real value injected at run time)

@@ -18,7 +18,17 @@
       "Edit(~/.aws/credentials)",
       "Edit(//etc/ssl/private/**)",
       "Edit(//c/Users/dev/.ssh/id_rsa)",
-      "Edit(!.env.example)"
+      "Edit(!.env.example)",
+      "Edit(/.agentleash.yaml)",
+      "Edit(/.claude/settings.json)",
+      "Edit(/.claude/settings.local.json)",
+      "Edit(/.claude/agentleash-state.json)",
+      "Edit(/.codex/hooks.json)",
+      "Edit(/.codex/config.toml)",
+      "Edit(~/.claude/settings.json)",
+      "Edit(~/.claude/settings.local.json)",
+      "Edit(~/.codex/config.toml)",
+      "Edit(~/.codex/hooks.json)"
     ]
   },
   "hooks": {

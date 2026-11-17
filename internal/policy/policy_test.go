@@ -769,3 +769,44 @@ func assertErrContains(t *testing.T, err error, subs ...string) {
 		}
 	}
 }
+
+func TestProtectFiles(t *testing.T) {
+	p, err := Parse([]byte("version: 1\nprotect:\n  files: [Makefile, \".github/workflows/**\"]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := p.ProtectedFiles()
+	if len(got) != len(BuiltinProtected)+2 || got[len(got)-1] != ".github/workflows/**" || got[0] != "./"+FileName {
+		t.Errorf("ProtectedFiles() = %q", got)
+	}
+	for _, bad := range []string{
+		"version: 1\nprotect:\n  files: [\"!x\"]\n",
+		"version: 1\nprotect:\n  files: ['a\\b']\n",
+		"version: 1\nprotect:\n  files: [x, x]\n",
+		"version: 1\nprotect:\n  other: [x]\n",
+	} {
+		if _, err := Parse([]byte(bad)); err == nil {
+			t.Errorf("Parse(%q) accepted an invalid protect section", bad)
+		}
+	}
+	// Round trip, and an empty section is omitted from init output.
+	out, err := Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q, err := Parse(out); err != nil || len(q.Protect.Files) != 2 {
+		t.Fatalf("round trip: %v %+v", err, q)
+	}
+	def, err := Marshal(Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(def), "protect:") {
+		t.Errorf("default policy should not list protect: it is built in")
+	}
+	for _, b := range BuiltinProtected {
+		if err := validateEntry(b, kindFile); err != nil {
+			t.Errorf("builtin %q invalid: %v", b, err)
+		}
+	}
+}

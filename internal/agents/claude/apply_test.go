@@ -328,10 +328,12 @@ func TestApplyPolicyChangeDropsStaleRulesOnly(t *testing.T) {
 		t.Fatalf("changed = %v, want %v", changed, bothFiles)
 	}
 	deny := denyList(t, readFile(t, settingsPath(root)))
-	want := []string{
-		"Read(.env)", "Read(*.pem)", "Edit(.env)", "Edit(*.pem)",
-		"Read(.env)", "WebFetch(domain:evil.example)",
+	prot, err := protectRules(smaller)
+	if err != nil {
+		t.Fatal(err)
 	}
+	want := append([]string{"Read(.env)", "Read(*.pem)", "Edit(.env)", "Edit(*.pem)"}, prot...)
+	want = append(want, "Read(.env)", "WebFetch(domain:evil.example)")
 	if !slices.Equal(deny, want) {
 		t.Fatalf("permissions.deny = %q, want %q", deny, want)
 	}

@@ -560,6 +560,11 @@ func (s *shellEval) findCommand(args []cmdArg, _ *stdinInfo) {
 			}
 			s.processCommand(inner, nil)
 			i = j
+		case "-delete":
+			if s.sec.touch {
+				// Mention mode: -delete removes every path find prints.
+				s.checkArg("rm", cmdArg{alts: outputs})
+			}
 		case "-fprint", "-fprint0", "-fprintf", "-fls", "-files0-from":
 			if i+1 < len(args) {
 				s.checkArg("find", args[i+1])

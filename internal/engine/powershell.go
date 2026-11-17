@@ -550,6 +550,18 @@ func (p *pwshEval) statement(st *psStmt) {
 	if name != "" {
 		args = toks[1:]
 	}
+	if p.sec.touch {
+		argv := []string{name}
+		for _, t := range args {
+			if t.isWord() {
+				argv = append(argv, t.text)
+			}
+		}
+		touchCommand(p.c, argv)
+		if st.pipeIn && psWriterCmds[name] && !hasPathArg(args) {
+			p.c.deny(RuleDynamicPath, fmt.Sprintf("`%s` receives the paths to change from the pipeline, which are only known at runtime.", name))
+		}
+	}
 	if p.restricted && !psSpecific(name, st.readerCtx) {
 		// ShellAuto with a clean bash parse: bash already analysed this
 		// statement; only PowerShell/cmd-specific constructs count here.
@@ -859,14 +871,15 @@ func (p *pwshEval) checkWordDir(name string, t psTok, readerCtx, dirRule bool) {
 	if psPrint[name] || name == "test-path" || existenceOnly[name] {
 		return
 	}
-	reader := readerCtx || psReaders[name] || readers[name]
+	baseReader := readerCtx || psReaders[name] || readers[name]
+	reader := baseReader || p.sec.touch
 	for _, alt := range p.resolve(t.text, 0) {
 		dyn := isDynamic(alt)
 		for _, cand := range argCandidates(alt) {
 			m, ok := p.sec.checkPath(cand)
 			if !ok {
 				if reader && dirRule && !dyn {
-					if dm, ok := p.sec.dirHoldsSecret(cand); ok {
+					if dm, ok := p.sec.dirHolds(cand, p.sec.touch && psWriterCmds[name]); ok {
 						p.c.deny(RuleSecretFile+":"+dm.pattern, dirReason(dm, "reading", p.sec))
 					}
 				}
@@ -875,14 +888,14 @@ func (p *pwshEval) checkWordDir(name string, t psTok, readerCtx, dirRule bool) {
 			switch {
 			case m.builtin && !dyn:
 				p.c.deny(RuleEnvExposure, secretFileReason(m, "reading", p.sec))
-			case !m.glob && psMetadataCmds[name]:
+			case !m.glob && psMetadataCmds[name] && !p.sec.touch:
 				// Get-ChildItem ~/.ssh, Get-Item .env: names and attributes only.
 			case !m.glob:
 				p.c.deny(RuleSecretFile+":"+m.pattern, secretFileReason(m, "reading", p.sec))
 			case isDynamic(cand):
 				// A statement starting with a variable is an expression,
 				// not a command: only readers and glued fragments count.
-				if !strings.ContainsAny(cand, " \t") && (reader || hasStatic(cand)) {
+				if !strings.ContainsAny(cand, " \t") && (baseReader || (p.sec.touch && psWriterCmds[name]) || hasStatic(cand)) {
 					p.c.deny(RuleDynamicPath, fmt.Sprintf("the path %q is built at runtime (variable or sub-expression) and could resolve to a secret file (secrets.files: %q). Use a literal, non-secret path.", display(plain(alt)), m.pattern))
 				}
 			case !reader && !interpreters[name] && name != "":
@@ -897,6 +910,11 @@ func (p *pwshEval) checkWordDir(name string, t psTok, readerCtx, dirRule bool) {
 			txt := plain(alt)
 			if strings.ContainsAny(txt, " \t") {
 				p.embedded(txt)
+			}
+			if p.sec.touch && strings.ContainsAny(txt, " \t\"") {
+				// PowerShell 5.1 hands embedded quotes to native programs,
+				// which split the argument again: check every piece.
+				p.touchPieces(txt)
 			}
 		}
 	}
@@ -1355,4 +1373,21 @@ func blankHeredocs(src string) string {
 		return true
 	})
 	return string(b)
+}
+
+// touchPieces checks the whitespace/quote separated pieces of one argument,
+// and their "=value" parts, as paths (mention mode only).
+func (p *pwshEval) touchPieces(txt string) {
+	pieces := strings.FieldsFunc(txt, func(r rune) bool { return r == ' ' || r == '\t' || r == '"' })
+	for _, f := range pieces {
+		cands := []string{f}
+		if i := strings.IndexByte(f, '='); i >= 0 {
+			cands = append(cands, f[i+1:])
+		}
+		for _, c := range cands {
+			if m, ok := p.sec.checkPath(escapeLitWin(c)); ok {
+				p.c.deny(RuleSecretFile+":"+m.pattern, secretFileReason(m, "passing", p.sec))
+			}
+		}
+	}
 }

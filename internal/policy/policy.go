@@ -26,6 +26,41 @@ type Policy struct {
 	Version  int      `yaml:"version"`
 	Secrets  Secrets  `yaml:"secrets"`
 	Commands Commands `yaml:"commands"`
+	// Protect lists extra files the agent may read but never modify. The
+	// built-in list (BuiltinProtected) is always enforced on top of it.
+	Protect Protect `yaml:"protect,omitempty"`
+}
+
+// Protect describes files that are readable but not writable by the agent.
+type Protect struct {
+	// Files use the same glob syntax as Secrets.Files.
+	Files []string `yaml:"files,omitempty"`
+}
+
+// BuiltinProtected are agentleash's own configuration files and the agent
+// settings that load its hooks. They are always write-protected, whatever the
+// policy says, so an agent cannot switch agentleash off by editing them.
+var BuiltinProtected = []string{
+	"./" + FileName,
+	"./.claude/settings.json",
+	"./.claude/settings.local.json",
+	"./.claude/agentleash-state.json",
+	"./.codex/hooks.json",
+	"./.codex/config.toml",
+	"~/.claude/settings.json",
+	"~/.claude/settings.local.json",
+	"~/.codex/config.toml",
+	"~/.codex/hooks.json",
+}
+
+// ProtectedFiles returns the built-in protected files followed by the
+// policy's own protect.files entries.
+func (p *Policy) ProtectedFiles() []string {
+	out := append([]string(nil), BuiltinProtected...)
+	if p != nil {
+		out = append(out, p.Protect.Files...)
+	}
+	return out
 }
 
 // Secrets describes what must never reach the agent.
@@ -279,6 +314,7 @@ func (p *Policy) Validate() error {
 	errs = append(errs, validateList("secrets.env", p.Secrets.Env, kindEnv)...)
 	errs = append(errs, validateList("commands.deny", p.Commands.Deny, kindCommand)...)
 	errs = append(errs, validateList("commands.ask", p.Commands.Ask, kindCommand)...)
+	errs = append(errs, validateList("protect.files", p.Protect.Files, kindFile)...)
 	return errors.Join(errs...)
 }
 
@@ -371,6 +407,9 @@ normalised first (whitespace collapsed; wrappers such as sudo, env, nohup and
 timeout stripped). Patterns containing " | " match a pipeline stage by stage;
 all other patterns match each simple command.`,
 	"commands.deny": "Commands that are always blocked.",
+	"protect": `Files the agent may read but never modify. agentleash always protects
+its own files (.agentleash.yaml, .claude/settings*.json, .codex/hooks.json,
+.codex/config.toml and the user-level equivalents); list extra ones here.`,
 	"commands.ask": `Commands that need confirmation. Claude Code asks you; Codex has no
 "ask" support, so these are denied with an explanation.`,
 }

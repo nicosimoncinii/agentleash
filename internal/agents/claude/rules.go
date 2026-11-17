@@ -276,7 +276,7 @@ func uncarvableReason(secret glob) string {
 
 // denyBlock builds agentleash's permissions.deny block for a policy:
 //
-//	Read(<secret>)... Read(!<allow>)... Edit(<secret>)... Edit(!<allow>)...
+//	Read(<secret>)... Read(!<allow>)... Edit(<secret>)... Edit(!<allow>)... Edit(<protected>)...
 //
 // Edit rules cover Write, Edit, MultiEdit and NotebookEdit, which Read rules do not.
 // The block goes first in permissions.deny so its "!" carve-outs only reach
@@ -345,5 +345,36 @@ func denyBlock(p *policy.Policy, root, home string) (block, notes []string, err 
 			block = append(block, tool+"("+n+")")
 		}
 	}
-	return block, notes, nil
+	prot, err := protectRules(p)
+	if err != nil {
+		return nil, nil, err
+	}
+	return append(block, prot...), notes, nil
+}
+
+// protectRules returns Edit(...) rules for the write-protected files
+// (agentleash's own configuration and protect.files). They stay readable, so
+// there is no Read rule. A "./" entry is anchored at the project root, which
+// Claude Code spells with a leading "/".
+func protectRules(p *policy.Policy) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, f := range p.ProtectedFiles() {
+		g, err := parseGlob(f)
+		if err != nil {
+			return nil, fmt.Errorf("protect.files: %w", err)
+		}
+		if g.anchor == anchorUNC {
+			continue
+		}
+		r := g.rulePath()
+		if rel, ok := strings.CutPrefix(f, "./"); ok && !strings.HasPrefix(r, "/") {
+			r = "/" + rel
+		}
+		if r = "Edit(" + r + ")"; !seen[r] {
+			seen[r] = true
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }

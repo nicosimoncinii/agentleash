@@ -195,8 +195,12 @@ func TestDenyBlock(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !slices.Equal(block, tt.want) {
-				t.Errorf("block = %q, want %q", block, tt.want)
+			prot, err := protectRules(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := append(slices.Clone(tt.want), prot...); !slices.Equal(block, want) {
+				t.Errorf("block = %q, want %q", block, want)
 			}
 			if (len(notes) == 0) != (len(tt.wantNotes) == 0) || len(notes) > 1 {
 				t.Fatalf("notes = %q, want one note containing %q", notes, tt.wantNotes)
@@ -256,5 +260,22 @@ func TestPathsIntersect(t *testing.T) {
 		if got := pathsIntersect(strings.Split(tt.a, "/"), strings.Split(tt.b, "/")); got != tt.want {
 			t.Errorf("pathsIntersect(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
 		}
+	}
+}
+
+func TestProtectRules(t *testing.T) {
+	p := &policy.Policy{Version: policy.CurrentVersion, Protect: policy.Protect{Files: []string{"Makefile", "ci/**"}}}
+	got, err := protectRules(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Edit(/.agentleash.yaml)", "Edit(/.claude/settings.json)", "Edit(/.codex/config.toml)",
+		"Edit(~/.claude/settings.json)", "Edit(~/.codex/hooks.json)"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("protectRules missing %s: %q", want, got)
+		}
+	}
+	if n := len(got); n != len(policy.BuiltinProtected)+2 {
+		t.Errorf("protectRules = %d rules, want %d: %q", n, len(policy.BuiltinProtected)+2, got)
 	}
 }

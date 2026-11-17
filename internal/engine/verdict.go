@@ -69,7 +69,7 @@ func (c *collector) verdict() Verdict {
 }
 
 func ruleRank(rule string) int {
-	order := []string{RuleSecretEnv, RuleSecretFile, RuleEnvExposure, RuleCommandDeny, RuleEncodedCmd,
+	order := []string{RuleSecretEnv, RuleSecretFile, RuleProtected, RuleEnvExposure, RuleCommandDeny, RuleEncodedCmd,
 		RuleObfuscation, RuleDynamicShell, RuleDynamicPath, RuleCommandAsk, RuleSecretDir, RuleSecretSearch}
 	for i, r := range order {
 		if rule == r || strings.HasPrefix(rule, r+":") {

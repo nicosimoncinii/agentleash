@@ -100,6 +100,14 @@ what must be blocked and common harmless names that must stay allowed.
 
 **Env globs** (`secrets.env`) use `path.Match` syntax over variable names.
 
+**Protected files** (`protect.files`, optional) use the file glob syntax above. They may be
+read but never modified by the agent (§7.9). A built-in list is always protected on top of
+it (`policy.BuiltinProtected`): `./.agentleash.yaml`, `./.claude/settings.json`,
+`./.claude/settings.local.json`, `./.claude/agentleash-state.json`, `./.codex/hooks.json`,
+`./.codex/config.toml`, and `~/.claude/settings.json`, `~/.claude/settings.local.json`,
+`~/.codex/config.toml`, `~/.codex/hooks.json`. A `./` prefix anchors an entry at the project
+root.
+
 **Command patterns** (`commands.deny`, `commands.ask`):
 - `*` matches any run of characters, including `/` and spaces. `\*` matches a literal `*`,
   as in `rm -rf /\*`. Every other character is literal.
@@ -587,7 +595,8 @@ a `|` are matched as the equivalent pipeline: a process substitution used as the
 `secret-file:<pattern>`, `secret-env:<glob>`, `env-exposure`, `command-deny:<pattern>`,
 `command-ask:<pattern>`, `parse-error`, `dynamic-path`, `dynamic-shell`, `obfuscation`,
 `encoded-command`, `credential-print`, `secret-dir-copy` (ask), `secret-search` (ask),
-`nesting-limit`, `too-complex`, `internal-error`, `no-policy`, `unknown-tool`.
+`nesting-limit`, `too-complex`, `internal-error`, `no-policy`, `unknown-tool`,
+`protected-file:<pattern>` (§7.9).
 `secret-file:<pattern>` is **ask** (not deny) when a secret path is only the destination of
 a copy from a non-secret file. When several rules fire, the verdict carries
 the most specific one (named secret before generic dynamic rules).
@@ -659,6 +668,61 @@ produced by parameter expansion per request (charged at one unit per KB; repeati
 doubling a long value is not bounded by the command size). Exceeding any limit returns **deny** (`too-complex`): "too complex to analyse
 safely". Glob and pattern matching is linear in the length of a word, so inputs up to 64 KB
 are answered in well under 100 ms and a single 256 KB argument in about 150 ms at most.
+
+### 7.9 Self-protection (`protect.files`, #17)
+
+Protected files (§5) are analysed by a second engine whose `secrets.files` are the protected
+globs, in **mention mode**: the exemptions that exist because a command reads no content
+(`rm`, `touch`, `chmod`, `ls`, `git rm --cached`, `Remove-Item`, the destination of `cp`, sed
+scripts and grep patterns, `find -delete` outputs) are switched off, so every reference
+counts, through globs, directories that hold a protected file, nested shells, `cd`, and
+interpreter literals. It runs only when the main verdict is not already deny. Also in mention
+mode:
+
+- `rm`/`rmdir`/`mv`/`unlink`/`shred` of an *ancestor* of the project or home (`rm -rf .`,
+  `rm -rf ..`) and `Remove-Item`/`Move-Item` of one count as touching every protected file;
+- `agentleash init` and `agentleash apply` (any flags) count as touching `.agentleash.yaml`;
+- a runtime-built path given to a writing command (`rm "$F"`, `ls | xargs rm`, a PowerShell
+  writer fed by the pipeline) is **ask** (`protected-file:(runtime path)`), unless the main
+  verdict already asks;
+- a PowerShell argument containing whitespace or `"` is also checked piece by piece, because
+  PowerShell 5.1 passes embedded quotes to native programs, which split it again.
+
+- `Write`/`Edit`/`apply_patch` paths (including patches carried by Codex `exec_command`)
+  that touch a protected file: **deny**.
+- `Read`, `Grep`, `Glob`: never restricted by protection.
+- A shell command that touches a protected file is allowed only when it is **provably
+  read-only**; otherwise **deny** (`protected-file:<pattern>`). The proof accepts literal
+  words only (no expansions, substitutions, backslash escapes, unquoted braces or glob
+  characters; `[`/`]` of `test` are fine), `if`/`[[ ]]` built from such parts, no output
+  redirection
+  other than `/dev/null` and fd duplication, no background jobs, environment assignments
+  limited to `LANG`/`LC_*`/`TZ`/`TERM`/`NO_COLOR`/`COLUMNS`, and commands from an allowlist:
+  `cat head tail less more wc stat ls nl od hexdump cmp comm diff grep egrep fgrep rg`
+  (without `--pre`) `jq md5sum sha*sum cksum b2sum realpath readlink dirname basename test
+  echo pwd cd type findstr`; `find` without `-delete`/`-exec*`/`-ok*`/`-fprint*`/`-fls`; `sed` with only
+  `-n -E -r -s -u -z` and print-only scripts (`1,200p`, `$p`, `10q`, `/re/,+5p`); `git` `status log show
+  diff blame ls-files rev-parse cat-file add commit` with no global options other than
+  `--no-pager`, `-P`, `--no-optional-locks`, `-C DIR` and no `--output`/`--ext-diff`/`-O`;
+  `bash|sh|zsh|dash -c SCRIPT` whose script is itself provable (3 levels). PowerShell
+  statements may also use `Get-Content Select-String Get-ChildItem Get-Item Test-Path
+  Get-FileHash Format-Hex Measure-Object Select-Object Get-Location Set-Location
+  Resolve-Path Write-Output Out-Host Format-List Format-Table ConvertFrom-Json ConvertTo-Json
+  Sort-Object Where-Object Out-String`, with no `$`, `@`, `()`, `{}`, `"`, backtick or
+  redirection other than `2>/dev/null`/`2>nul` in any word. `ShellAuto` requires both proofs,
+  refuses `&`, `^` and `%`, which only cmd.exe would interpret, and refuses words containing
+  whitespace (cmd.exe does not treat `'` as a quote) except the script of `bash -c`.
+- `git add` and `git commit` are accepted although they are not strictly read-only: they
+  never change the working tree, but they run repository hooks, as `diff`/`show` honour
+  `diff.external` and textconv drivers from `.git/config`, which is not protected.
+- Claude Code also gets native `Edit(<path>)` deny rules for every protected entry (no
+  `Read` rule), after the secret rules.
+
+Limits: protection is lexical, a speed bump against an agent that edits its own leash, not a
+guarantee. A write that never names a protected file is not seen: a script, patch or archive
+written in an earlier call and then run or applied (`python3 x.py`, `git apply x.diff`,
+`patch`, `tar x`, `unzip -o`), and git commands that rewrite the working tree (`git checkout
+.`, `git restore .`, `git stash`, `git reset --hard`, `git pull`, switching branches).
 
 ## 8. Testing strategy
 

@@ -1,0 +1,151 @@
+description: "Self-protection: the agent cannot modify agentleash's own configuration (issue #17)"
+cases:
+  - name: redirect over the policy
+    tool: shell
+    shell: bash
+    command: "echo 'version: 1' > .agentleash.yaml"
+    expect: deny
+    note: "An output redirection onto agentleash's own policy."
+  - name: append to claude settings
+    tool: shell
+    shell: bash
+    command: "echo '{}' >> .claude/settings.json"
+    expect: deny
+    note: "Claude Code settings load the agentleash hook."
+  - name: sed in place on policy
+    tool: shell
+    shell: bash
+    command: "sed -i 's/deny/x/' .agentleash.yaml"
+    expect: deny
+    note: "In-place edit."
+  - name: sed write command
+    tool: shell
+    shell: bash
+    command: "sed -n 'w .agentleash.yaml' notes.txt"
+    expect: deny
+    note: "sed scripts can write files with w."
+  - name: rm policy
+    tool: shell
+    shell: bash
+    command: "rm .agentleash.yaml"
+    expect: deny
+    note: "rm reads nothing, but it removes the policy."
+  - name: rm claude dir
+    tool: shell
+    shell: bash
+    command: "rm -rf .claude"
+    expect: deny
+    note: "A directory holding protected files."
+  - name: mv policy away
+    tool: shell
+    shell: bash
+    command: "mv .agentleash.yaml /tmp/p"
+    expect: deny
+    note: "Moving it away disables the policy."
+  - name: cp over policy
+    tool: shell
+    shell: bash
+    command: "cp /tmp/evil.yaml .agentleash.yaml"
+    expect: deny
+    note: "Copy destination."
+  - name: tee codex hooks
+    tool: shell
+    shell: bash
+    command: "tee .codex/hooks.json < /tmp/h"
+    expect: deny
+    note: "tee writes its operands."
+  - name: truncate codex config
+    tool: shell
+    shell: bash
+    command: "truncate -s0 .codex/config.toml"
+    expect: deny
+    note: "Codex config enables hooks."
+  - name: git checkout policy
+    tool: shell
+    shell: bash
+    command: "git checkout -- .agentleash.yaml"
+    expect: deny
+    note: "Restores an older version over the file."
+  - name: cd then rm
+    tool: shell
+    shell: bash
+    command: "cd .claude && rm settings.json"
+    expect: deny
+    note: "Relative path after cd."
+  - name: glob rm
+    tool: shell
+    shell: bash
+    command: "rm .agent*"
+    expect: deny
+    note: "A glob that can match the policy."
+  - name: home settings
+    tool: shell
+    shell: bash
+    command: "echo '{\"disableAllHooks\": true}' > ~/.claude/settings.json"
+    expect: deny
+    note: "User-level Claude settings can disable all hooks."
+  - name: python write
+    tool: shell
+    shell: bash
+    command: "python3 -c \"open('.agentleash.yaml','w').write('version: 1')\""
+    expect: deny
+    note: "Interpreter literal."
+  - name: node write
+    tool: shell
+    shell: bash
+    command: "node -e \"require('fs').writeFileSync('.claude/settings.json','{}')\""
+    expect: deny
+    note: "Interpreter literal."
+  - name: nested bash
+    tool: shell
+    shell: bash
+    command: "bash -c 'rm .agentleash.yaml'"
+    expect: deny
+    note: "Nested shell."
+  - name: find delete
+    tool: shell
+    shell: bash
+    command: "find . -name .agentleash.yaml -delete"
+    expect: deny
+    note: "find -delete removes what it prints."
+  - name: git pager config
+    tool: shell
+    shell: bash
+    command: "git -c core.pager='rm .agentleash.yaml' log .agentleash.yaml"
+    expect: deny
+    note: "-c can run commands."
+  - name: read then rm
+    tool: shell
+    shell: bash
+    command: "bash -lc 'cat .agentleash.yaml; rm .agentleash.yaml'"
+    expect: deny
+    note: "Only the read part is read-only."
+  - name: editor
+    tool: shell
+    shell: bash
+    command: "vim .agentleash.yaml"
+    expect: deny
+    note: "Editors write."
+  - name: set-content policy
+    tool: shell
+    shell: powershell
+    command: "Set-Content .agentleash.yaml 'version: 1'"
+    expect: deny
+    note: "PowerShell writer."
+  - name: remove-item claude dir
+    tool: shell
+    shell: powershell
+    command: "Remove-Item -Recurse .claude"
+    expect: deny
+    note: "PowerShell remove of a directory holding protected files."
+  - name: out-file codex config
+    tool: shell
+    shell: powershell
+    command: "'x' | Out-File .codex\\config.toml"
+    expect: deny
+    note: "Pipeline into a writer."
+  - name: auto rm
+    tool: shell
+    command: "rm .agentleash.yaml"
+    expect: deny
+    note: "Unknown dialect."

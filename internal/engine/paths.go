@@ -57,6 +57,9 @@ type secretSet struct {
 	basesUnknown bool
 	dotglob      bool
 	resolve      func(string) (string, error)
+	// touch selects mention mode (protect.go): every reference counts, even
+	// from commands that never read content (rm, touch, chmod, Remove-Item).
+	touch bool
 }
 
 func newSecretSet(p *policy.Policy, req Request, resolve func(string) (string, error)) *secretSet {
@@ -647,7 +650,11 @@ func (s *secretSet) allowed(gp gpath) bool {
 // contain the project root or the home directory are excluded: those hold
 // secrets for every policy and are handled by the recursive copy/search
 // rules instead.
-func (s *secretSet) dirHoldsSecret(arg string) (match, bool) {
+func (s *secretSet) dirHoldsSecret(arg string) (match, bool) { return s.dirHolds(arg, false) }
+
+// dirHolds is dirHoldsSecret; with ancestors, directories that contain the
+// project root or the home directory count too (rm -rf . in mention mode).
+func (s *secretSet) dirHolds(arg string, ancestors bool) (match, bool) {
 	if hasGlobMeta(arg) {
 		return match{}, false
 	}
@@ -656,8 +663,8 @@ func (s *secretSet) dirHoldsSecret(arg string) (match, bool) {
 			continue
 		}
 		self := parsePath(strings.TrimSuffix(c, "/") + "/**")
-		if (s.root != "" && pathsIntersect(self, parsePath(s.root), true)) ||
-			(s.home != "" && pathsIntersect(self, parsePath(s.home), true)) {
+		if !ancestors && ((s.root != "" && pathsIntersect(self, parsePath(s.root), true)) ||
+			(s.home != "" && pathsIntersect(self, parsePath(s.home), true))) {
 			continue
 		}
 		dir := strings.TrimSuffix(c, "/")
