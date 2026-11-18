@@ -41,8 +41,8 @@ Teams using more than one agent maintain several configs that drift apart.
   Piping a download straight into a shell (`curl … | sh`) is always blocked, because the
   script cannot be checked: download it to a file first (that form asks for confirmation).
 - **Proven by a public attack corpus**: every bypass attempt in [`testdata/attacks`](testdata/attacks)
-  (430+ cases, written by red-team rounds) must be blocked, every command in
-  [`testdata/benign`](testdata/benign) (270+ real agent commands) must pass. CI runs it on
+  (450+ cases, written by red-team rounds) must be blocked, every command in
+  [`testdata/benign`](testdata/benign) (280+ real agent commands) must pass. CI runs it on
   Linux, macOS and Windows on every push, plus end-to-end tests against the built binary.
 
 ```yaml
@@ -134,7 +134,7 @@ Found a bypass? Please report it privately, see [SECURITY.md](SECURITY.md).
 
 - [x] v0.1: Claude Code + Codex, secrets + dangerous commands, attack corpus
 - [x] v0.2: red-team hardening (interpreters, runners, write-then-run, `rm`/`git` variants)
-- [x] Self-protection of agent and agentleash config ([#17](https://github.com/nicosimoncinii/agentleash/issues/17))
+- [x] v0.3: self-protection of agent and agentleash config ([#17](https://github.com/nicosimoncinii/agentleash/issues/17)), Codex interactive sessions ([#18](https://github.com/nicosimoncinii/agentleash/issues/18))
 - [ ] Gemini CLI and Cursor adapters
 - [ ] Audit log of blocked actions
 - [ ] Secret placeholders (agent sees `{{STRIPE_KEY}}`, real value injected at run time)
