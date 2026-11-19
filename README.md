@@ -95,6 +95,10 @@ agentleash doctor           # verify everything is wired up
 
 > Codex asks you to trust new hooks once: open Codex and run `/hooks`.
 
+Want your agent to do the setup? [`skills/agentleash`](skills/agentleash/SKILL.md) is a
+SKILL.md skill that walks Claude Code, Codex and other agents through installing and
+configuring agentleash. The protection itself always comes from the binary and its hooks.
+
 ## Requirements
 
 - **Claude Code v2.1.295 or later.** Older versions ignore the hook's `onFailure: "block"`,
